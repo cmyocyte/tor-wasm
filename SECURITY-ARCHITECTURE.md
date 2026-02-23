@@ -147,6 +147,57 @@ All defenses are implemented in Rust compiled to WASM. Each defense:
 - TLS to relay (self-signed, `rejectUnauthorized: false`)
 - No SNI for IP address targets
 
+## Bridge Trust Elimination
+
+### Two-Hop Bridge Blinding
+
+The single-bridge model exposes both client IP and guard relay IP to the bridge operator. Two-hop blinding splits this knowledge across two independent operators:
+
+```
+Client → Bridge A (sees client IP, NOT guard) → Bridge B (sees guard IP, NOT client) → Guard
+```
+
+**Crypto mechanism:** The client encrypts the guard relay address under Bridge B's static X25519 public key using ephemeral ECDH + HKDF-SHA256 + AES-256-GCM. Bridge A receives an opaque blob it cannot decrypt. Bridge B decrypts to learn the guard address but only sees Bridge A's IP, not the client's.
+
+| Entity | Sees Client IP? | Sees Guard IP? | Can Correlate? |
+|--------|----------------|----------------|----------------|
+| Bridge A | Yes | No (encrypted) | No |
+| Bridge B | No (sees Bridge A) | Yes | No |
+| Both colluding | Yes | Yes | Yes |
+
+**Implementation:**
+- Client: `src/transport/bridge_blind.rs` — `blind_target_address()` using `x25519-dalek`, `hkdf`, `aes-gcm`
+- Bridge A: `bridge-server/server-bridge-a.js` — opaque WS-to-WS relay, does not interpret `?dest=` parameter
+- Bridge B: `bridge-server/server-bridge-b.js` — X25519 ECDH + AES-256-GCM decryption using Node.js built-in `crypto`
+- Key generation: `bridge-server/keygen.js`
+
+**Fixed nonce safety:** A 12-byte fixed nonce (`bridge-blind`) is safe because each connection uses a fresh ephemeral X25519 keypair, making every (derived key, nonce) pair unique.
+
+### ECH-Hidden Infrastructure
+
+Both Bridge A and the signaling broker run behind Cloudflare with Encrypted Client Hello (ECH). The censor sees a TLS connection to Cloudflare's shared IP — the true destination (bridge domain) is encrypted in the ClientHello. Blocking the bridge requires blocking all Cloudflare traffic.
+
+### Browser-Native Peer Bridges
+
+Volunteer proxies run as browser tabs (no installation). The censored client connects via WebRTC DataChannel (appears as a video call to DPI), the proxy relays to Bridge A over WebSocket. The proxy sees only encrypted bytes — it has no Tor protocol knowledge and cannot decrypt traffic (TLS is end-to-end between WASM client and guard).
+
+**Components:**
+- Signaling broker: `broker/server.js` — matches clients with proxies, stateless after match
+- Volunteer proxy: `proxy/proxy.js` + `proxy/index.html` — solidarity webpage
+- Client transport: `src/transport/webrtc.rs` — Rust/WASM WebRTC DataChannel with AsyncRead/AsyncWrite
+
+### Combined Visibility Matrix
+
+| Entity | Client IP | Guard IP | Destination | Content |
+|--------|-----------|----------|-------------|---------|
+| Peer proxy | Yes | No | No | No |
+| Bridge A | No (proxy IP) | No (encrypted) | No | No |
+| Bridge B | No (Bridge A IP) | Yes | No | No |
+| Guard | No (Bridge B IP) | — | No | No |
+| Exit | No | No | Yes | If HTTP |
+
+**No single entity can link client identity to destination.**
+
 ## Test Coverage
 
 | Category | Tests | Type |

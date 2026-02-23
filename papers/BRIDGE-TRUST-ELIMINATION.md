@@ -2,7 +2,7 @@
 
 **Project:** tor-wasm
 **Date:** February 2026
-**Status:** Design complete, implementation planned
+**Status:** Implemented and tested (February 2026)
 
 ---
 
@@ -473,7 +473,7 @@ With the peer bridge path (Path 1), there are **5 layers of separation** between
 - `src/transport/bridge_blind.rs` (~50 lines) — Client-side X25519 encryption of target address
 - `bridge-server/keygen.js` (~20 lines) — Generate Bridge B's X25519 keypair
 
-**Dependencies:** `tweetnacl` (Node.js, for X25519 + AES-GCM), `x25519-dalek` (Rust, already a dependency)
+**Dependencies:** Node.js built-in `crypto` module (X25519 + HKDF + AES-GCM, zero external dependencies), `x25519-dalek` (Rust, already a dependency)
 
 **Testing:**
 - Unit: Encrypt/decrypt roundtrip for target addresses

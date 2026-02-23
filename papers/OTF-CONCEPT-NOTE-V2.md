@@ -442,6 +442,18 @@ All defenses use `[native code]` toString spoofing so websites cannot detect the
 
 These limitations are documented in our `THREAT-MODEL.md` alongside the attack vectors they enable and our planned mitigations.
 
+#### Bridge Trust Innovations (Implemented February 2026)
+
+Beyond the core Tor protocol, we have implemented three innovations that eliminate the bridge as a trust bottleneck:
+
+**1. Two-Hop Bridge Blinding:** The bridge is split into two components (Bridge A and Bridge B) operated by different parties. The client encrypts the guard relay address under Bridge B's X25519 public key. Bridge A sees the client's IP but cannot decrypt the guard address. Bridge B decrypts the guard address but only sees Bridge A's IP, not the client's. No single bridge can correlate client identity with destination. This provides a formal separation-of-knowledge guarantee (see `BRIDGE-TRUST-ELIMINATION.md`, Theorem 2).
+
+**2. ECH-Hidden Infrastructure:** Both the bridge and signaling broker run behind Cloudflare with Encrypted Client Hello (ECH). The censor sees a TLS connection to Cloudflare's shared IP — the true destination is encrypted. Blocking the bridge requires blocking all Cloudflare traffic, affecting millions of legitimate websites.
+
+**3. Browser-Native Peer Bridges:** A Snowflake-like system where both the censored client AND volunteer proxies run entirely in browser tabs — zero installation on either side. Volunteers visit a "Solidarity Bridge" webpage; their browser tab becomes an ephemeral proxy via WebRTC DataChannel. The proxy copies encrypted bytes (cannot decrypt — TLS is end-to-end) and appears as a video call to DPI equipment. New proxy IPs appear constantly and cannot be cataloged.
+
+**Combined effect:** With all three innovations deployed, there are 5 layers of separation between user and destination, and 4 independent entities would need to collude to break anonymity (proxy + Bridge A + Bridge B + exit relay). No existing circumvention tool provides this level of trust minimization with zero installation.
+
 ### Performance (Measured, Not Estimated)
 
 We performed 500 circuit builds through the production Tor network and compared head-to-head with Tor Browser:
@@ -532,7 +544,7 @@ To demonstrate this is a real, working system: we built a 3-hop circuit from iOS
 | **Installation** | 50MB+ native app | 20MB+ native app | 15MB+ native app | **None — loads in a browser tab** |
 | **iOS support** | Cannot run (requires native process spawning) | App (when available in App Store) | App (when available in App Store) | **Works in Safari — no app needed** |
 | **Forensic trace** | App binary, data directory, registry entries | App binary, VPN configuration | App binary, configuration | **None in private browsing — close the tab, it's gone** |
-| **Trust model** | No single point sees both user and destination | Operator sees user IP + all destinations + content | Operator sees user IP + all destinations + content | **Same as Tor Browser — no single point of compromise** |
+| **Trust model** | No single point sees both user and destination | Operator sees user IP + all destinations + content | Operator sees user IP + all destinations + content | **Stronger than Tor Browser — two-hop blinding ensures no single bridge sees both client IP and guard IP** |
 | **Binary size** | 50MB+ | 20MB+ | 15MB+ | **1.2MB (538KB gzipped)** |
 
 ### Open Source Commitment
@@ -582,3 +594,4 @@ Enterprise users requiring SLAs and managed infrastructure can fund ongoing deve
 4. `pets-submission/main.pdf` — PETS 2026 paper (17 pages, submitted Feb 2026)
 5. `THREAT-MODEL.md` — Formal threat model document
 6. `SECURITY-ARCHITECTURE.md` — Technical security architecture
+7. `BRIDGE-TRUST-ELIMINATION.md` — Bridge trust elimination design (two-hop blinding, ECH, peer bridges)

@@ -281,6 +281,29 @@ That is, a bridge operator observes **strictly less** than a guard relay operato
 | Health monitoring | `/health` endpoint with connection stats | Always enabled |
 | Stale entry cleanup | Every 2 minutes | Automatic |
 
+### Two-Hop Bridge Blinding (Added February 2026)
+
+The bridge is split into two independent components to eliminate single-point correlation:
+
+| Component | Sees | Cannot See |
+|-----------|------|------------|
+| **Bridge A** (client-facing) | Client IP, Bridge B address | Guard relay IP (encrypted) |
+| **Bridge B** (relay-facing) | Guard relay IP, Bridge A address | Client IP |
+
+**Mechanism:** The client encrypts the guard address under Bridge B's X25519 public key (ephemeral ECDH + HKDF-SHA256 + AES-256-GCM). Bridge A forwards the opaque blob without interpretation. Bridge B decrypts and connects to the guard. Neither bridge alone can correlate client identity with destination.
+
+**Implementation:** ~500 lines across 4 files (`bridge_blind.rs`, `server-bridge-a.js`, `server-bridge-b.js`, `keygen.js`). Zero new npm dependencies — uses Node.js built-in `crypto` for X25519/HKDF/AES-GCM.
+
+### Browser-Native Peer Bridges (Added February 2026)
+
+A Snowflake-like system where **both** client and volunteer proxy run in the browser:
+
+- **Signaling broker** (`broker/server.js`): Matches censored clients with volunteer proxies via WebRTC SDP exchange. Stateless after match — stores no connection history.
+- **Volunteer proxy** (`proxy/proxy.js`): Runs as a plain webpage. No extension, no installation. Copies encrypted bytes between WebRTC DataChannel and WebSocket. Cannot decrypt traffic.
+- **Client transport** (`src/transport/webrtc.rs`): Rust/WASM WebRTC DataChannel transport implementing AsyncRead/AsyncWrite.
+
+WebRTC DataChannel traffic appears as a video call to DPI equipment — blocking it would require blocking Google Meet, Zoom, and Discord.
+
 ---
 
 ## 8. Current Status (February 2026)
@@ -305,6 +328,10 @@ That is, a bridge operator observes **strictly less** than a guard relay operato
 - **Traffic shaping enabled by default** (10% padding overhead)
 - **20-vector fingerprint defense** (Canvas, WebGL, Audio, WebRTC, etc.)
 - **Formal threat model + security architecture documentation**
+- **Two-hop bridge blinding** (X25519 ECDH + AES-256-GCM, no single bridge sees both client IP and guard IP)
+- **ECH-hidden bridge infrastructure** (Cloudflare ECH, censor cannot identify bridge traffic)
+- **Browser-native peer bridges** (WebRTC DataChannel, zero-install volunteer proxies, Snowflake-like)
+- **Signaling broker** (matches censored clients with volunteer proxies, stateless after match)
 
 ### What's Missing (Planned for OTF Grant Period)
 - **External security audit** — Required before any production deployment recommendation

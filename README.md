@@ -58,33 +58,42 @@ A **real Tor client** compiled to WebAssembly that:
 
 ## 🏗️ Architecture
 
+### Direct Mode
+```
+Browser (WASM)  →  Bridge Server (WS→TCP)  →  Guard → Middle → Exit → Destination
+```
+
+### Blinded Mode (two-hop, recommended)
+```
+Browser (WASM)  →  Bridge A (WS→WS)  →  Bridge B (decrypt, TCP)  →  Guard → Middle → Exit
+                   sees: client IP        sees: guard IP
+                   cannot see: guard      cannot see: client
+```
+
+### Peer Bridge Mode (maximum censorship resistance)
+```
+Browser (WASM)  →  Volunteer Proxy (WebRTC→WS)  →  Bridge A  →  Bridge B  →  Guard → ...
+                   looks like a video call
+```
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     BROWSER                                     │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │  tor-wasm (Rust → WebAssembly)                           │  │
+│  │  tor-wasm (Rust → WebAssembly, 1.2MB)                    │  │
 │  │                                                          │  │
-│  │  • ntor handshakes (from Arti)                          │  │
-│  │  • Onion encryption (3 layers)                          │  │
+│  │  • ntor handshakes (X25519 + HKDF-SHA256)               │  │
+│  │  • Onion encryption (3 layers AES-128-CTR)              │  │
 │  │  • Circuit building (Guard → Middle → Exit)             │  │
-│  │  • RELAY cell processing                                │  │
+│  │  • Bridge blinding (X25519 + AES-256-GCM)               │  │
+│  │  • 20-vector fingerprint defense                        │  │
+│  │  • Transport: WebSocket or WebRTC DataChannel           │  │
 │  └──────────────────────────────────────────────────────────┘  │
-│                           │ WebSocket                          │
 └───────────────────────────┼────────────────────────────────────┘
                             │
                             ▼
-┌───────────────────────────────────────────────────────────────┐
-│  Bridge Server (WebSocket → TCP proxy)                        │
-│  • Browsers can't do raw TCP, so we proxy through here        │
-│  • Also serves Tor consensus data                             │
-│  • Cannot read encrypted traffic                              │
-└───────────────────────────┼───────────────────────────────────┘
-                            │ TCP/TLS
-                            ▼
-┌───────────────────────────────────────────────────────────────┐
-│  REAL TOR NETWORK                                             │
-│  Guard Relay → Middle Relay → Exit Relay → Destination        │
-└───────────────────────────────────────────────────────────────┘
+                   REAL TOR NETWORK
+          Guard → Middle → Exit → Destination
 ```
 
 ## 📦 Components
@@ -113,9 +122,33 @@ WebSocket to TCP proxy server:
 
 ```
 bridge-server/
-├── server-collector.js   # Main server (fetches consensus)
+├── server-collector.js    # Main server (fetches consensus)
+├── server-bridge-a.js     # Bridge A: client-facing relay (blinded mode)
+├── server-bridge-b.js     # Bridge B: relay-facing decryptor (blinded mode)
+├── keygen.js              # Generate Bridge B X25519 keypair
 ├── package.json
-└── DEPLOY.md            # Deployment guide
+├── DEPLOY.md              # Single-bridge deployment
+└── DEPLOY-BLINDED.md      # Two-hop blinded deployment + ECH
+```
+
+### `/broker` - Signaling Broker
+
+Matches censored clients with volunteer peer proxies:
+
+```
+broker/
+├── server.js     # WebSocket signaling broker
+└── package.json
+```
+
+### `/proxy` - Volunteer Peer Proxy
+
+Solidarity webpage — volunteer opens a browser tab to help censored users:
+
+```
+proxy/
+├── proxy.js      # Browser-based WebRTC relay (~200 lines)
+└── index.html    # Solidarity Bridge webpage
 ```
 
 ### `/pkg` - WASM Output
@@ -174,6 +207,8 @@ const response = await client.fetch('http://example.com');
 
 ## 🔐 Privacy Model
 
+### Direct Mode (single bridge)
+
 | Observer | What They See |
 |----------|--------------|
 | **Destination** | Tor exit node IP (NOT your IP) ✅ |
@@ -181,11 +216,22 @@ const response = await client.fetch('http://example.com');
 | **Bridge Server** | Your IP + which guard (NOT your traffic) |
 | **You run bridge** | Full privacy ✅ |
 
+### Blinded Mode (two-hop bridge)
+
+| Observer | What They See |
+|----------|--------------|
+| **Destination** | Tor exit node IP (NOT your IP) ✅ |
+| **Your ISP** | Connection to Bridge A (ECH-hidden) |
+| **Bridge A** | Your IP only (guard address encrypted) ✅ |
+| **Bridge B** | Guard IP only (does not know your IP) ✅ |
+| **Peer proxy** | Your IP only (guard and destination hidden) ✅ |
+
+In blinded mode, **no single entity** can see both your IP and which guard relay you connect to. Correlation requires collusion between Bridge A and Bridge B operators.
+
 ## ⚠️ Important Notes
 
-1. **Bridge Server Trust**: You need to trust whoever runs the bridge server
-2. **HTTP Only**: HTTPS requires TLS-in-TLS (planned)
-3. **Not Audited**: Use at your own risk until security audit
+1. **Bridge Server Trust**: In direct mode, the bridge sees your IP and the guard relay. In blinded mode (two-hop), this trust is split — no single bridge sees both. See `papers/BRIDGE-TRUST-ELIMINATION.md` for details.
+2. **Not Audited**: Use at your own risk until security audit
 
 ## 📚 References
 
