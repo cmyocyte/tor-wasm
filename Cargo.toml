@@ -75,6 +75,23 @@ web-sys = { version = "0.3", features = [
     "MutationRecord",
     "HtmlIFrameElement",
     "Worker",
+    # WebRTC features (peer bridge transport)
+    "RtcPeerConnection",
+    "RtcConfiguration",
+    "RtcDataChannel",
+    "RtcDataChannelInit",
+    "RtcDataChannelEvent",
+    "RtcIceCandidate",
+    "RtcIceCandidateInit",
+    "RtcIceServer",
+    "RtcSessionDescription",
+    "RtcSessionDescriptionInit",
+    "RtcSdpType",
+    "RtcPeerConnectionIceEvent",
+    "RtcSignalingState",
+    "RtcIceConnectionState",
+    "RtcIceGatheringState",
+    "RtcDataChannelState",
 ] }
 
 # Async runtime (WASM-compatible)

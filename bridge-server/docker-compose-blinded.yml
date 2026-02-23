@@ -1,0 +1,40 @@
+# Two-Hop Blinded Bridge Deployment
+#
+# Bridge A: Client-facing (behind Cloudflare ECH)
+# Bridge B: Relay-facing (separate operator, different CDN)
+#
+# Setup:
+#   1. Generate keypair:  node keygen.js
+#   2. Set BRIDGE_B_PRIVATE_KEY in .env
+#   3. docker compose -f docker-compose-blinded.yml up -d
+
+services:
+  bridge-a:
+    build:
+      context: .
+      dockerfile: Dockerfile.bridge-a
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - BRIDGE_B_URL=ws://bridge-b:9090
+      - BRIDGE_AUTH_TOKEN=${BRIDGE_AUTH_TOKEN:-}
+      - RATE_LIMIT_MAX=10
+      - MAX_CONNECTIONS=1000
+    depends_on:
+      bridge-b:
+        condition: service_healthy
+    restart: unless-stopped
+
+  bridge-b:
+    build:
+      context: .
+      dockerfile: Dockerfile.bridge-b
+    # Not exposed externally — only Bridge A connects to it
+    expose:
+      - "9090"
+    environment:
+      - PORT=9090
+      - BRIDGE_B_PRIVATE_KEY=${BRIDGE_B_PRIVATE_KEY}
+      - MAX_CONNECTIONS=1000
+    restart: unless-stopped
