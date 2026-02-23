@@ -69,7 +69,41 @@ pub struct WasmTcpStream {
     state: Rc<UnsafeCell<StreamState>>,
 }
 
+/// Reconnection configuration
+const MAX_RECONNECT_ATTEMPTS: u32 = 5;
+const RECONNECT_BACKOFF_MS: [u32; 5] = [1_000, 2_000, 4_000, 8_000, 16_000];
+
 impl WasmTcpStream {
+    /// Connect to a Tor relay through the WebSocket bridge with retry logic.
+    ///
+    /// Retries up to 5 times with exponential backoff: 1s, 2s, 4s, 8s, 16s.
+    pub async fn connect_with_retry(url: &str) -> IoResult<Self> {
+        let mut last_err = None;
+        for attempt in 0..MAX_RECONNECT_ATTEMPTS {
+            match Self::connect(url).await {
+                Ok(stream) => {
+                    if attempt > 0 {
+                        log::info!("WebSocket reconnected on attempt {}", attempt + 1);
+                    }
+                    return Ok(stream);
+                }
+                Err(e) => {
+                    log::warn!("WebSocket connect attempt {} failed: {}", attempt + 1, e);
+                    last_err = Some(e);
+
+                    if attempt + 1 < MAX_RECONNECT_ATTEMPTS {
+                        let delay = RECONNECT_BACKOFF_MS[attempt as usize];
+                        log::info!("Retrying in {}ms...", delay);
+                        gloo_timers::future::TimeoutFuture::new(delay).await;
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            io::Error::new(io::ErrorKind::TimedOut, "All reconnection attempts failed")
+        }))
+    }
+
     /// Connect to a Tor relay through the WebSocket bridge
     pub async fn connect(url: &str) -> IoResult<Self> {
         log::info!("Connecting to WebSocket bridge: {}", url);

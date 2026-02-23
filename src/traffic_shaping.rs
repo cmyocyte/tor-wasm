@@ -25,7 +25,7 @@ use serde::{Serialize, Deserialize};
 /// Configuration for traffic shaping
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficShapingConfig {
-    /// Enable random padding cells (default: false)
+    /// Enable random padding cells (default: true for privacy)
     pub padding_enabled: bool,
     
     /// Probability of adding a padding cell (0.0 - 1.0, default: 0.1)
@@ -45,9 +45,13 @@ pub struct TrafficShapingConfig {
 }
 
 impl Default for TrafficShapingConfig {
+    /// Default configuration with padding enabled for privacy.
+    ///
+    /// Adds ~10% padding overhead. Chaff and timing obfuscation are off
+    /// by default (use `paranoid()` for full protection at ~20% overhead).
     fn default() -> Self {
         Self {
-            padding_enabled: false, // Off by default for performance
+            padding_enabled: true, // On by default for privacy
             padding_probability: 0.1,
             min_cell_interval_ms: 0, // No minimum interval by default
             chaff_enabled: false,
@@ -58,13 +62,23 @@ impl Default for TrafficShapingConfig {
 }
 
 impl TrafficShapingConfig {
-    /// Create a configuration with padding enabled
-    pub fn with_padding() -> Self {
+    /// Create a minimal configuration with no traffic shaping.
+    ///
+    /// Use this for testing or bandwidth-constrained environments.
+    pub fn disabled() -> Self {
         Self {
-            padding_enabled: true,
-            padding_probability: 0.1,
-            ..Default::default()
+            padding_enabled: false,
+            padding_probability: 0.0,
+            min_cell_interval_ms: 0,
+            chaff_enabled: false,
+            chaff_interval_secs: 30,
+            max_random_delay_ms: 0,
         }
+    }
+
+    /// Create a configuration with padding enabled (same as default).
+    pub fn with_padding() -> Self {
+        Self::default()
     }
     
     /// Create a paranoid configuration with all protections
@@ -284,9 +298,17 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = TrafficShapingConfig::default();
-        assert!(!config.padding_enabled);
+        assert!(config.padding_enabled); // Padding on by default for privacy
         assert!(!config.chaff_enabled);
         assert_eq!(config.min_cell_interval_ms, 0);
+    }
+
+    #[test]
+    fn test_disabled_config() {
+        let config = TrafficShapingConfig::disabled();
+        assert!(!config.padding_enabled);
+        assert!(!config.chaff_enabled);
+        assert_eq!(config.padding_probability, 0.0);
     }
     
     #[test]

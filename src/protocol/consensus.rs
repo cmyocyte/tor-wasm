@@ -114,6 +114,12 @@ impl ConsensusParser {
             } else if line.starts_with("p ") {
                 // Exit policy (not fully implemented yet)
                 // We just mark that this relay has an exit policy
+            } else if line.starts_with("family ") {
+                // Family declaration from relay descriptor
+                // Format: family $<fp1> $<fp2> ...
+                if let Some(ref mut builder) = current_relay {
+                    builder.family = Some(line[7..].to_string());
+                }
             }
         }
         
@@ -169,6 +175,7 @@ impl ConsensusParser {
             bandwidth: None,
             published: 0,
             ntor_onion_key: None,
+            family: None,
         })
     }
     
@@ -204,6 +211,7 @@ struct RelayBuilder {
     bandwidth: Option<u64>,
     published: u64,
     ntor_onion_key: Option<String>,
+    family: Option<String>,
 }
 
 impl RelayBuilder {
@@ -218,7 +226,7 @@ impl RelayBuilder {
             bandwidth: self.bandwidth.unwrap_or(0),
             published: self.published,
             ntor_onion_key: self.ntor_onion_key,
-            family: None,
+            family: self.family,
         })
     }
 }

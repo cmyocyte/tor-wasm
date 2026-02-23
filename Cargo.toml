@@ -1,3 +1,5 @@
+[workspace]
+
 [package]
 name = "tor-wasm"
 version = "0.1.0"
@@ -44,6 +46,35 @@ web-sys = { version = "0.3", features = [
     "Headers",
     # LocalStorage features
     "Storage",
+    # Fingerprint defense features
+    "Document",
+    "HtmlDocument",
+    "Element",
+    "Node",
+    "NodeList",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "ImageData",
+    "WebGlRenderingContext",
+    "WebGl2RenderingContext",
+    "Navigator",
+    "Screen",
+    "DomRect",
+    "DomRectReadOnly",
+    "Range",
+    "Performance",
+    "PerformanceEntry",
+    "AudioContext",
+    "AudioDestinationNode",
+    "AnalyserNode",
+    "BaseAudioContext",
+    "SpeechSynthesis",
+    "MediaDevices",
+    "MutationObserver",
+    "MutationObserverInit",
+    "MutationRecord",
+    "HtmlIFrameElement",
+    "Worker",
 ] }
 
 # Async runtime (WASM-compatible)

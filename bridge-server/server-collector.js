@@ -29,7 +29,45 @@ const config = {
   port: parseInt(process.env.PORT) || 8080,
   // Allow custom CORS origins for production
   corsOrigins: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : ['*'],
+  // Optional auth token — if set, all WebSocket connections must provide it
+  authToken: process.env.BRIDGE_AUTH_TOKEN || null,
+  // Rate limiting: max new WebSocket connections per IP per window
+  rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX) || 10,
+  rateLimitWindowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 60_000, // 1 minute
+  // Global connection limit
+  maxConnections: parseInt(process.env.MAX_CONNECTIONS) || 1000,
 };
+
+// --- Rate Limiter ---
+// Tracks connection attempts per IP with TTL cleanup
+const rateLimitMap = new Map(); // IP -> { count, firstSeen }
+
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip);
+
+  if (!entry || (now - entry.firstSeen) > config.rateLimitWindowMs) {
+    // New window
+    rateLimitMap.set(ip, { count: 1, firstSeen: now });
+    return true; // allowed
+  }
+
+  entry.count++;
+  if (entry.count > config.rateLimitMax) {
+    return false; // rate limited
+  }
+  return true; // allowed
+}
+
+// Periodic cleanup of stale rate limit entries (every 2 minutes)
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of rateLimitMap) {
+    if ((now - entry.firstSeen) > config.rateLimitWindowMs * 2) {
+      rateLimitMap.delete(ip);
+    }
+  }
+}, 120_000);
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--port') {
@@ -40,6 +78,9 @@ for (let i = 0; i < args.length; i++) {
 console.log(`🔧 Configuration:`);
 console.log(`   PORT: ${config.port} (from ${process.env.PORT ? 'env' : 'default'})`);
 console.log(`   CORS: ${config.corsOrigins.join(', ')}`);
+console.log(`   AUTH: ${config.authToken ? 'ENABLED (token set)' : 'DISABLED (anonymous)'}`);
+console.log(`   RATE LIMIT: ${config.rateLimitMax} connections per ${config.rateLimitWindowMs / 1000}s per IP`);
+console.log(`   MAX CONNECTIONS: ${config.maxConnections}`);
 
 // Create HTTP server
 const server = http.createServer();
@@ -323,10 +364,40 @@ let connectionId = 0;
 
 wss.on('connection', (ws, req) => {
   const id = ++connectionId;
-  console.log(`[${id}] 🔌 New WebSocket connection from ${req.socket.remoteAddress}`);
-  
-  // Extract target from query string
+  const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
+  console.log(`[${id}] 🔌 New WebSocket connection from ${clientIp}`);
+
+  // --- Global connection limit ---
+  if (wss.clients.size > config.maxConnections) {
+    console.log(`[${id}] ❌ Global connection limit reached (${wss.clients.size}/${config.maxConnections})`);
+    ws.close(1013, 'Server at capacity');
+    return;
+  }
+
+  // --- Per-IP rate limiting ---
+  if (!checkRateLimit(clientIp)) {
+    console.log(`[${id}] ❌ Rate limited: ${clientIp}`);
+    ws.close(1008, 'Rate limit exceeded');
+    return;
+  }
+
+  // Extract query string (used for both auth and target)
   const query = url.parse(req.url, true).query;
+
+  // --- Authentication ---
+  if (config.authToken) {
+    const authHeader = req.headers['authorization'];
+    const queryToken = query.token;
+    const providedToken = authHeader?.replace('Bearer ', '') || queryToken;
+
+    if (providedToken !== config.authToken) {
+      console.log(`[${id}] ❌ Authentication failed from ${clientIp}`);
+      ws.close(1008, 'Authentication required');
+      return;
+    }
+    console.log(`[${id}] ✅ Authenticated`);
+  }
+
   const target = query.addr;
   
   if (!target) {
@@ -491,6 +562,9 @@ server.on('request', (req, res) => {
       status: 'ok',
       uptime: process.uptime(),
       connections: wss.clients.size,
+      maxConnections: config.maxConnections,
+      rateLimitTracked: rateLimitMap.size,
+      authEnabled: !!config.authToken,
       consensusCached: !!consensusCache,
       consensusAge: cacheAge,
       relayCount: consensusCache ? consensusCache.consensus.relay_count : 0,

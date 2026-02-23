@@ -29,7 +29,6 @@ use web_sys::console;
 use std::sync::Arc;
 
 // Modules
-mod crypto;
 pub mod protocol;
 mod circuit;
 mod error;
@@ -49,6 +48,7 @@ pub mod parallel_builder;
 pub mod cooperative;
 pub mod padding;
 pub mod congestion;
+pub mod fingerprint_defense;
 // mod arti_impls; // Temporarily disabled until arti dependencies are WASM-ready
 
 // Security tests (only compiled in test mode)
