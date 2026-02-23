@@ -1,0 +1,114 @@
+[package]
+name = "tor-wasm"
+version = "0.1.0"
+edition = "2021"
+authors = ["Quantum Wallet Team"]
+description = "Minimal Tor client compiled to WebAssembly"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# WASM bindings
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+gloo-timers = { version = "0.3", features = ["futures"] }
+web-sys = { version = "0.3", features = [
+    "console",
+    "Window",
+    "WebSocket",
+    "MessageEvent",
+    "ErrorEvent",
+    "BinaryType",
+    "Crypto",
+    "SubtleCrypto",
+    "CryptoKey",
+    # IndexedDB features
+    "IdbFactory",
+    "IdbDatabase",
+    "IdbObjectStore",
+    "IdbTransaction",
+    "IdbTransactionMode",
+    "IdbRequest",
+    "IdbOpenDbRequest",
+    "IdbVersionChangeEvent",
+    "DomStringList",
+    "EventTarget",
+    # Fetch API features
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "Headers",
+    # LocalStorage features
+    "Storage",
+] }
+
+# Async runtime (WASM-compatible)
+futures = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde-wasm-bindgen = "0.6"
+
+# Cryptography (all WASM-compatible!)
+sha2 = "0.10"
+sha3 = "0.10"
+sha1 = "0.10"  # For Tor relay digest
+aes = "0.8"    # For AES-CTR
+ctr = "0.9"    # For counter mode
+aes-gcm = "0.10"
+curve25519-dalek = { version = "4", features = ["serde"] }
+ed25519-dalek = { version = "2", features = ["serde"] }
+x25519-dalek = { version = "2", features = ["serde", "static_secrets"] }
+rand = "0.8"
+getrandom = { version = "0.2", features = ["js"] }
+hkdf = "0.12"
+hmac = "0.12"
+
+# Security hardening
+zeroize = { version = "1.7", features = ["derive"] }  # Key material cleanup
+subtle = "2.5"  # Constant-time comparisons
+
+# TLS for HTTPS-over-Tor
+# Using ring 0.17 with WASM support
+ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }
+# std + web features: std for full API, web for WASM time via js-sys
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "0.26"
+# The "web" feature enables UnixTime::now() on WASM via js_sys::Date
+rustls-pki-types = { version = "1.0", features = ["std", "web"] }
+web-time = "1.0"  # Backup WASM-compatible time
+
+# Encoding
+base64 = "0.22"
+hex = "0.4"
+
+# Error handling
+thiserror = "1.0"
+
+# Logging
+log = "0.4"
+console_log = "1.0"
+
+# Tor dependencies (temporarily disabled for initial WASM build)
+# arti-client = { version = "0.36.0", default-features = false }
+tor-rtcompat = { version = "0.36.0", default-features = false }
+# tokio = { version = "1.48.0", features = ["macros", "rt"] }
+# tor-general-addr = { version = "0.36.0", default-features = false }
+async-trait = "0.1.89"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+opt-level = "z"  # Optimize for size
+lto = true       # Link-time optimization
+codegen-units = 1
+panic = "abort"  # Remove panic infrastructure
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--enable-mutable-globals"]

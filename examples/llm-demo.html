@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Anonymous LLM API Demo - tor-wasm</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #e0e0e0;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 8px;
+            color: #fff;
+        }
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-bottom: 24px;
+        }
+        .badge {
+            display: inline-block;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            color: white;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            margin-bottom: 16px;
+        }
+        .card {
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .card h2 {
+            font-size: 16px;
+            margin-bottom: 12px;
+            color: #fff;
+        }
+        label {
+            display: block;
+            font-size: 13px;
+            color: #888;
+            margin-bottom: 6px;
+        }
+        input, select, textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            background: rgba(0,0,0,0.3);
+            color: #fff;
+            font-size: 14px;
+            margin-bottom: 12px;
+        }
+        textarea {
+            min-height: 80px;
+            font-family: monospace;
+            resize: vertical;
+        }
+        .btn-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        button {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            color: white;
+        }
+        .btn-primary:hover { transform: translateY(-1px); }
+        .btn-secondary {
+            background: rgba(255,255,255,0.1);
+            color: #fff;
+        }
+        .btn-full {
+            width: 100%;
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: white;
+            margin-bottom: 12px;
+        }
+        .status-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px;
+            margin-bottom: 16px;
+        }
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #666;
+        }
+        .status-dot.connected { background: #10b981; }
+        .status-dot.connecting { background: #f59e0b; animation: pulse 1s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .stat {
+            text-align: center;
+            padding: 12px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 8px;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #6366f1;
+        }
+        .stat-label {
+            font-size: 11px;
+            color: #888;
+            margin-top: 4px;
+        }
+        #log {
+            background: #0d1117;
+            border-radius: 8px;
+            padding: 12px;
+            height: 200px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+        .log-entry { margin-bottom: 4px; }
+        .log-time { color: #666; margin-right: 8px; }
+        .log-info { color: #58a6ff; }
+        .log-success { color: #3fb950; }
+        .log-error { color: #f85149; }
+        .log-response { color: #d29922; }
+        #response-box {
+            background: #0d1117;
+            border-radius: 8px;
+            padding: 16px;
+            font-family: monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 300px;
+            overflow-y: auto;
+            color: #3fb950;
+        }
+        .warning {
+            background: rgba(245, 158, 11, 0.2);
+            border: 1px solid rgba(245, 158, 11, 0.5);
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 16px;
+            font-size: 13px;
+            color: #fbbf24;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <span class="badge">Anonymous LLM Access</span>
+        <h1>tor-wasm LLM Demo</h1>
+        <p class="subtitle">Make anonymous API calls to LLM providers through Tor</p>
+
+        <div class="status-bar">
+            <div class="status-dot" id="status-dot"></div>
+            <span id="status-text">Disconnected</span>
+        </div>
+
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-value" id="stat-circuit">-</div>
+                <div class="stat-label">Circuit (s)</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="stat-api">-</div>
+                <div class="stat-label">API Call (s)</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="stat-total">-</div>
+                <div class="stat-label">Total (s)</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Configuration</h2>
+            <label>Bridge URL (WSS)</label>
+            <input type="text" id="bridge-url" value="ws://localhost:8080">
+
+            <label>LLM Provider</label>
+            <select id="provider">
+                <option value="anthropic">Anthropic (Claude)</option>
+                <option value="openai">OpenAI (GPT)</option>
+                <option value="mistral">Mistral AI</option>
+            </select>
+
+            <label>API Key</label>
+            <input type="password" id="api-key" placeholder="Enter your API key">
+
+            <div class="warning">
+                Your API key is sent directly through the Tor circuit to the provider.
+                It never touches our bridge server.
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Prompt</h2>
+            <textarea id="prompt" placeholder="Enter your prompt...">What is 2+2? Reply in one sentence.</textarea>
+        </div>
+
+        <button class="btn-full" onclick="runDemo()">Send Anonymous Query</button>
+
+        <div class="btn-grid">
+            <button class="btn-secondary" onclick="checkExitIP()">Check Exit IP</button>
+            <button class="btn-secondary" onclick="clearLog()">Clear Log</button>
+        </div>
+
+        <div class="card">
+            <h2>Response</h2>
+            <div id="response-box">Response will appear here...</div>
+        </div>
+
+        <div class="card">
+            <h2>Log</h2>
+            <div id="log"></div>
+        </div>
+    </div>
+
+    <script type="module">
+        import init, { TorClient } from '../pkg/tor_wasm.js';
+
+        let client = null;
+        let wasmReady = false;
+
+        // Initialize WASM
+        try {
+            await init();
+            wasmReady = true;
+            log('success', 'WASM initialized');
+        } catch (e) {
+            log('error', `WASM init failed: ${e.message}`);
+        }
+
+        const PROVIDERS = {
+            anthropic: {
+                url: 'https://api.anthropic.com/v1/messages',
+                headers: (apiKey) => ({
+                    'x-api-key': apiKey,
+                    'anthropic-version': '2023-06-01',
+                    'content-type': 'application/json'
+                }),
+                body: (prompt) => JSON.stringify({
+                    model: 'claude-3-haiku-20240307',
+                    max_tokens: 256,
+                    messages: [{ role: 'user', content: prompt }]
+                }),
+                parseResponse: (resp) => {
+                    try {
+                        // Extract JSON from HTTP response
+                        const jsonStart = resp.indexOf('{');
+                        const jsonPart = resp.substring(jsonStart);
+                        const data = JSON.parse(jsonPart);
+                        return data.content?.[0]?.text || JSON.stringify(data, null, 2);
+                    } catch (e) {
+                        return resp;
+                    }
+                }
+            },
+            openai: {
+                url: 'https://api.openai.com/v1/chat/completions',
+                headers: (apiKey) => ({
+                    'Authorization': `Bearer ${apiKey}`,
+                    'content-type': 'application/json'
+                }),
+                body: (prompt) => JSON.stringify({
+                    model: 'gpt-3.5-turbo',
+                    max_tokens: 256,
+                    messages: [{ role: 'user', content: prompt }]
+                }),
+                parseResponse: (resp) => {
+                    try {
+                        const jsonStart = resp.indexOf('{');
+                        const jsonPart = resp.substring(jsonStart);
+                        const data = JSON.parse(jsonPart);
+                        return data.choices?.[0]?.message?.content || JSON.stringify(data, null, 2);
+                    } catch (e) {
+                        return resp;
+                    }
+                }
+            },
+            mistral: {
+                url: 'https://api.mistral.ai/v1/chat/completions',
+                headers: (apiKey) => ({
+                    'Authorization': `Bearer ${apiKey}`,
+                    'content-type': 'application/json'
+                }),
+                body: (prompt) => JSON.stringify({
+                    model: 'mistral-tiny',
+                    max_tokens: 256,
+                    messages: [{ role: 'user', content: prompt }]
+                }),
+                parseResponse: (resp) => {
+                    try {
+                        const jsonStart = resp.indexOf('{');
+                        const jsonPart = resp.substring(jsonStart);
+                        const data = JSON.parse(jsonPart);
+                        return data.choices?.[0]?.message?.content || JSON.stringify(data, null, 2);
+                    } catch (e) {
+                        return resp;
+                    }
+                }
+            }
+        };
+
+        window.runDemo = async () => {
+            if (!wasmReady) {
+                log('error', 'WASM not ready');
+                return;
+            }
+
+            const bridgeUrl = document.getElementById('bridge-url').value;
+            const provider = document.getElementById('provider').value;
+            const apiKey = document.getElementById('api-key').value;
+            const prompt = document.getElementById('prompt').value;
+
+            if (!apiKey) {
+                log('error', 'Please enter an API key');
+                return;
+            }
+
+            const totalStart = Date.now();
+
+            // Step 1: Connect to bridge
+            log('info', '=== Starting Anonymous LLM Query ===');
+            log('info', `Provider: ${provider.toUpperCase()}`);
+            log('info', `Connecting to bridge: ${bridgeUrl}...`);
+            setStatus('connecting');
+
+            try {
+                const circuitStart = Date.now();
+                client = await new TorClient(bridgeUrl);
+                log('success', 'Connected to bridge');
+
+                // Step 2: Bootstrap
+                log('info', 'Bootstrapping Tor network...');
+                await client.bootstrap();
+                log('success', 'Bootstrap complete');
+
+                const bootstrapTime = ((Date.now() - circuitStart) / 1000).toFixed(2);
+                document.getElementById('stat-circuit').textContent = bootstrapTime;
+                setStatus('connected');
+
+                // Step 3: Make API call (cooperative scheduler builds circuit internally)
+                const config = PROVIDERS[provider];
+                log('info', `Sending anonymous request to ${config.url}...`);
+
+                const apiStart = Date.now();
+                const headers = JSON.stringify(config.headers(apiKey));
+                const body = config.body(prompt);
+
+                log('info', `Prompt: "${prompt.substring(0, 80)}${prompt.length > 80 ? '...' : ''}"`);
+
+                const response = await client.fetch_post_cooperative(config.url, headers, body);
+                const apiTime = ((Date.now() - apiStart) / 1000).toFixed(2);
+                document.getElementById('stat-api').textContent = apiTime;
+                log('success', `API response received in ${apiTime}s`);
+
+                // Parse and display response
+                const parsed = config.parseResponse(response);
+                document.getElementById('response-box').textContent = parsed;
+                log('response', `Response: ${parsed.substring(0, 100)}...`);
+
+                const totalTime = ((Date.now() - totalStart) / 1000).toFixed(2);
+                document.getElementById('stat-total').textContent = totalTime;
+                log('success', `=== Query Complete (${totalTime}s total) ===`);
+
+            } catch (e) {
+                log('error', `Error: ${e.message || e}`);
+                setStatus('disconnected');
+            }
+        };
+
+        window.checkExitIP = async () => {
+            if (!wasmReady) {
+                log('error', 'WASM not ready');
+                return;
+            }
+
+            const bridgeUrl = document.getElementById('bridge-url').value;
+
+            log('info', 'Checking exit IP via ipinfo.io...');
+            setStatus('connecting');
+
+            try {
+                // Create a fresh client for IP check
+                const ipClient = await new TorClient(bridgeUrl);
+                await ipClient.bootstrap();
+
+                // Use httpbin which is more Tor-friendly
+                const response = await ipClient.fetch_get_cooperative('http://httpbin.org/ip');
+                log('success', `Exit IP info received`);
+
+                // Try to parse and show IP
+                try {
+                    const jsonStart = response.indexOf('{');
+                    const data = JSON.parse(response.substring(jsonStart));
+                    if (data.origin) {
+                        log('success', `Your Tor exit IP: ${data.origin}`);
+                    }
+                } catch (e) {
+                    log('info', response.substring(0, 300));
+                }
+                setStatus('connected');
+            } catch (e) {
+                log('error', `Failed to check IP: ${e.message || e}`);
+                setStatus('disconnected');
+            }
+        };
+
+        window.clearLog = () => {
+            document.getElementById('log').innerHTML = '';
+            document.getElementById('response-box').textContent = 'Response will appear here...';
+            document.getElementById('stat-circuit').textContent = '-';
+            document.getElementById('stat-api').textContent = '-';
+            document.getElementById('stat-total').textContent = '-';
+        };
+
+        function log(level, message) {
+            const logDiv = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${level}`;
+            const time = new Date().toLocaleTimeString('en-US', {
+                hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'
+            });
+            entry.innerHTML = `<span class="log-time">[${time}]</span>${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+            console.log(`[${level.toUpperCase()}]`, message);
+        }
+
+        function setStatus(status) {
+            const dot = document.getElementById('status-dot');
+            const text = document.getElementById('status-text');
+            dot.className = 'status-dot ' + status;
+            text.textContent = status === 'connected' ? 'Connected' :
+                              status === 'connecting' ? 'Connecting...' : 'Disconnected';
+        }
+    </script>
+</body>
+</html>

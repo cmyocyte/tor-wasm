@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>tor-wasm Fingerprint Defense Demo</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: #0a0a0a; color: #e0e0e0;
+            padding: 20px; max-width: 1000px; margin: 0 auto;
+        }
+        h1 { color: #7b68ee; margin-bottom: 8px; font-size: 1.5em; }
+        .subtitle { color: #888; margin-bottom: 24px; font-size: 0.9em; }
+        .controls {
+            display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;
+        }
+        button {
+            padding: 10px 20px; border: 1px solid #333; border-radius: 6px;
+            background: #1a1a2e; color: #e0e0e0; cursor: pointer;
+            font-size: 0.9em; transition: all 0.2s;
+        }
+        button:hover { background: #2a2a4e; border-color: #7b68ee; }
+        button.active { background: #7b68ee; color: white; border-color: #7b68ee; }
+        .results {
+            display: grid; grid-template-columns: 1fr 1fr;
+            gap: 16px; margin-bottom: 24px;
+        }
+        @media (max-width: 700px) { .results { grid-template-columns: 1fr; } }
+        .card {
+            background: #111; border: 1px solid #222; border-radius: 8px;
+            padding: 16px; overflow: hidden;
+        }
+        .card h3 {
+            color: #7b68ee; font-size: 0.85em; text-transform: uppercase;
+            letter-spacing: 1px; margin-bottom: 12px;
+        }
+        .row {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 6px 0; border-bottom: 1px solid #1a1a1a; font-size: 0.85em;
+        }
+        .row:last-child { border-bottom: none; }
+        .label { color: #888; }
+        .value { color: #e0e0e0; font-family: monospace; text-align: right; max-width: 60%; word-break: break-all; }
+        .value.changed { color: #4caf50; }
+        .value.same { color: #888; }
+        .status-bar {
+            background: #111; border: 1px solid #222; border-radius: 8px;
+            padding: 12px 16px; margin-bottom: 24px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .status-bar .label { font-size: 0.85em; }
+        .badge {
+            padding: 4px 12px; border-radius: 12px; font-size: 0.8em; font-weight: 600;
+        }
+        .badge.off { background: #331111; color: #ff6b6b; }
+        .badge.on { background: #113311; color: #4caf50; }
+        canvas { display: none; }
+        #canvas-preview {
+            display: block; width: 100%; max-width: 300px;
+            border: 1px solid #222; border-radius: 4px; margin-top: 8px;
+        }
+        .hash { font-family: monospace; font-size: 0.75em; color: #888; word-break: break-all; }
+    </style>
+</head>
+<body>
+    <h1>tor-wasm Fingerprint Defense</h1>
+    <p class="subtitle">Compare your browser fingerprint before and after defense activation</p>
+
+    <div class="status-bar">
+        <span class="label">Defense Status</span>
+        <span id="defense-status" class="badge off">INACTIVE</span>
+    </div>
+
+    <div class="controls">
+        <button onclick="collectFingerprint('before')">1. Collect Fingerprint (Before)</button>
+        <button onclick="activateDefense()">2. Activate Defense</button>
+        <button onclick="collectFingerprint('after')">3. Collect Fingerprint (After)</button>
+        <button onclick="compareResults()">4. Compare</button>
+    </div>
+
+    <div class="results">
+        <div class="card">
+            <h3>Navigator</h3>
+            <div id="nav-results">
+                <div class="row"><span class="label">Click "Collect" to start</span></div>
+            </div>
+        </div>
+        <div class="card">
+            <h3>Screen</h3>
+            <div id="screen-results">
+                <div class="row"><span class="label">Click "Collect" to start</span></div>
+            </div>
+        </div>
+        <div class="card">
+            <h3>WebGL</h3>
+            <div id="webgl-results">
+                <div class="row"><span class="label">Click "Collect" to start</span></div>
+            </div>
+        </div>
+        <div class="card">
+            <h3>Canvas</h3>
+            <div id="canvas-results">
+                <div class="row"><span class="label">Click "Collect" to start</span></div>
+            </div>
+            <canvas id="fp-canvas" width="280" height="30"></canvas>
+            <canvas id="canvas-preview" width="280" height="30"></canvas>
+        </div>
+        <div class="card">
+            <h3>Timezone</h3>
+            <div id="tz-results">
+                <div class="row"><span class="label">Click "Collect" to start</span></div>
+            </div>
+        </div>
+        <div class="card">
+            <h3>Audio</h3>
+            <div id="audio-results">
+                <div class="row"><span class="label">Click "Collect" to start</span></div>
+            </div>
+        </div>
+        <div class="card">
+            <h3>WebRTC</h3>
+            <div id="webrtc-results">
+                <div class="row"><span class="label">Click "Collect" to start</span></div>
+            </div>
+        </div>
+        <div class="card">
+            <h3>Performance</h3>
+            <div id="perf-results">
+                <div class="row"><span class="label">Click "Collect" to start</span></div>
+            </div>
+        </div>
+        <div class="card">
+            <h3>Anti-Detection</h3>
+            <div id="antidetect-results">
+                <div class="row"><span class="label">Click "Collect" to start</span></div>
+            </div>
+        </div>
+        <div class="card">
+            <h3>CSS / Media Queries</h3>
+            <div id="css-results">
+                <div class="row"><span class="label">Click "Collect" to start</span></div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // Try WASM first, fall back to JS
+        let applyFingerprintDefense, checkDefenseStatus, getNormalizedProfile;
+        let defenseEngine = 'none';
+
+        try {
+            const wasm = await import('../pkg/tor_wasm.js');
+            await wasm.default();
+            applyFingerprintDefense = wasm.apply_fingerprint_defense;
+            checkDefenseStatus = wasm.check_defense_status;
+            getNormalizedProfile = wasm.get_normalized_profile;
+            defenseEngine = 'wasm';
+            console.log('[tor-wasm] Loaded WASM fingerprint defense engine');
+        } catch (wasmErr) {
+            console.warn('[tor-wasm] WASM not available, falling back to JS:', wasmErr.message);
+            try {
+                const js = await import('../src/fingerprint-defense.js');
+                applyFingerprintDefense = js.applyFingerprintDefense;
+                checkDefenseStatus = js.checkDefenseStatus;
+                getNormalizedProfile = js.getNormalizedProfile;
+                defenseEngine = 'js';
+                console.log('[tor-wasm] Loaded JS fingerprint defense fallback');
+            } catch (jsErr) {
+                console.error('[tor-wasm] No defense engine available:', jsErr.message);
+            }
+        }
+
+        const engineLabel = document.createElement('span');
+        engineLabel.style.cssText = 'font-size:0.75em;color:#888;margin-left:8px;';
+        engineLabel.textContent = `engine: ${defenseEngine}`;
+        document.querySelector('h1').appendChild(engineLabel);
+
+        const snapshots = { before: null, after: null };
+
+        function getNavigatorFingerprint() {
+            return {
+                userAgent: navigator.userAgent,
+                platform: navigator.platform,
+                language: navigator.language,
+                languages: JSON.stringify(navigator.languages),
+                hardwareConcurrency: navigator.hardwareConcurrency,
+                deviceMemory: navigator.deviceMemory || 'N/A',
+                maxTouchPoints: navigator.maxTouchPoints,
+                vendor: navigator.vendor || '(empty)',
+                plugins: navigator.plugins ? navigator.plugins.length : 0,
+            };
+        }
+
+        function getScreenFingerprint() {
+            return {
+                width: screen.width,
+                height: screen.height,
+                colorDepth: screen.colorDepth,
+                pixelDepth: screen.pixelDepth,
+                devicePixelRatio: window.devicePixelRatio,
+                outerWidth: window.outerWidth,
+                outerHeight: window.outerHeight,
+            };
+        }
+
+        function getWebGLFingerprint() {
+            try {
+                const canvas = document.createElement('canvas');
+                const gl = canvas.getContext('webgl');
+                if (!gl) return { supported: false };
+
+                const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+                return {
+                    vendor: gl.getParameter(gl.VENDOR),
+                    renderer: gl.getParameter(gl.RENDERER),
+                    unmaskedVendor: debugInfo ? gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL) : 'blocked',
+                    unmaskedRenderer: debugInfo ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) : 'blocked',
+                };
+            } catch (e) {
+                return { error: e.message };
+            }
+        }
+
+        async function getCanvasFingerprint() {
+            const canvas = document.getElementById('fp-canvas');
+            const ctx = canvas.getContext('2d');
+
+            // Standard fingerprint test pattern
+            ctx.fillStyle = '#f60';
+            ctx.fillRect(0, 0, 280, 30);
+            ctx.fillStyle = '#069';
+            ctx.font = '14px Arial';
+            ctx.fillText('tor-wasm fingerprint test', 2, 20);
+            ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
+            ctx.fillText('tor-wasm fingerprint test', 4, 22);
+
+            const dataURL = canvas.toDataURL();
+            const hash = await sha256(dataURL);
+
+            // Show preview
+            const preview = document.getElementById('canvas-preview');
+            const pctx = preview.getContext('2d');
+            pctx.drawImage(canvas, 0, 0);
+
+            return {
+                hash: hash.substring(0, 16) + '...',
+                fullHash: hash,
+                length: dataURL.length,
+            };
+        }
+
+        function getTimezoneFingerprint() {
+            const d = new Date();
+            let resolvedTz = 'N/A';
+            try {
+                resolvedTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            } catch(_) {}
+            return {
+                offset: d.getTimezoneOffset(),
+                timezone: resolvedTz,
+                dateString: d.toTimeString().match(/\((.+)\)/)?.[1] || 'N/A',
+            };
+        }
+
+        function getAudioFingerprint() {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const dest = ctx.destination;
+                return {
+                    sampleRate: ctx.sampleRate,
+                    maxChannelCount: dest.maxChannelCount,
+                    state: ctx.state,
+                };
+            } catch (e) {
+                return { error: e.message };
+            }
+        }
+
+        function getWebRTCFingerprint() {
+            try {
+                const pc = new RTCPeerConnection();
+                pc.close();
+                return { available: true, blocked: false };
+            } catch (e) {
+                return { available: false, blocked: true, reason: e.message };
+            }
+        }
+
+        function getPerformanceFingerprint() {
+            const times = [];
+            for (let i = 0; i < 5; i++) times.push(performance.now());
+            const precision = times[1] - times[0];
+            return {
+                'now()': performance.now(),
+                precision: precision === 0 ? 'sub-ms (multiple calls same)' : `~${precision}ms`,
+                timeOrigin: performance.timeOrigin,
+                memory: performance.memory ? `${Math.round(performance.memory.usedJSHeapSize / 1024 / 1024)}MB used` : 'N/A',
+            };
+        }
+
+        function getAntiDetectionFingerprint() {
+            const results = {};
+            // Check if navigator.platform getter looks native
+            try {
+                const desc = Object.getOwnPropertyDescriptor(navigator, 'platform');
+                results.platformGetter = desc && desc.get ? desc.get.toString().substring(0, 40) : 'no getter';
+            } catch (e) { results.platformGetter = e.message; }
+            // Check if canvas.toDataURL looks native
+            results.toDataURLStr = HTMLCanvasElement.prototype.toDataURL.toString().includes('[native code]') ? 'native' : 'patched (detectable!)';
+            // Check prototype chain
+            results.navigatorProto = Object.getPrototypeOf(navigator).constructor.name;
+            return results;
+        }
+
+        function getCSSFingerprint() {
+            if (!window.matchMedia) return { error: 'matchMedia not available' };
+            return {
+                darkMode: window.matchMedia('(prefers-color-scheme: dark)').matches,
+                lightMode: window.matchMedia('(prefers-color-scheme: light)').matches,
+                reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+                finePointer: window.matchMedia('(pointer: fine)').matches,
+                hoverHover: window.matchMedia('(hover: hover)').matches,
+            };
+        }
+
+        async function sha256(str) {
+            const buf = new TextEncoder().encode(str);
+            const hash = await crypto.subtle.digest('SHA-256', buf);
+            return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        function renderSection(id, data, compareData) {
+            const container = document.getElementById(id);
+            container.innerHTML = '';
+            for (const [key, value] of Object.entries(data)) {
+                const row = document.createElement('div');
+                row.className = 'row';
+                const changed = compareData && String(compareData[key]) !== String(value);
+                row.innerHTML = `
+                    <span class="label">${key}</span>
+                    <span class="value ${changed ? 'changed' : compareData ? 'same' : ''}">${value}</span>
+                `;
+                container.appendChild(row);
+            }
+        }
+
+        window.collectFingerprint = async function(phase) {
+            const nav = getNavigatorFingerprint();
+            const scr = getScreenFingerprint();
+            const webgl = getWebGLFingerprint();
+            const canvas = await getCanvasFingerprint();
+            const tz = getTimezoneFingerprint();
+            const audio = getAudioFingerprint();
+            const webrtc = getWebRTCFingerprint();
+            const perf = getPerformanceFingerprint();
+            const antidetect = getAntiDetectionFingerprint();
+            const css = getCSSFingerprint();
+
+            snapshots[phase] = { nav, scr, webgl, canvas, tz, audio, webrtc, perf, antidetect, css };
+
+            renderSection('nav-results', nav);
+            renderSection('screen-results', scr);
+            renderSection('webgl-results', webgl);
+            renderSection('canvas-results', canvas);
+            renderSection('tz-results', tz);
+            renderSection('audio-results', audio);
+            renderSection('webrtc-results', webrtc);
+            renderSection('perf-results', perf);
+            renderSection('antidetect-results', antidetect);
+            renderSection('css-results', css);
+        };
+
+        window.activateDefense = function() {
+            if (!applyFingerprintDefense) {
+                alert('No defense engine loaded. Ensure WASM pkg or JS module is available.');
+                return;
+            }
+            try {
+                const result = applyFingerprintDefense();
+                const count = result.applied ? result.applied.length : result.count || 0;
+                document.getElementById('defense-status').className = 'badge on';
+                document.getElementById('defense-status').textContent = `ACTIVE (${count} defenses, ${defenseEngine.toUpperCase()})`;
+            } catch (e) {
+                console.error('Defense activation failed:', e);
+                alert('Defense activation failed: ' + e.message);
+            }
+        };
+
+        window.compareResults = function() {
+            if (!snapshots.before || !snapshots.after) {
+                alert('Collect fingerprints both before and after activating defense first.');
+                return;
+            }
+            renderSection('nav-results', snapshots.after.nav, snapshots.before.nav);
+            renderSection('screen-results', snapshots.after.scr, snapshots.before.scr);
+            renderSection('webgl-results', snapshots.after.webgl, snapshots.before.webgl);
+            renderSection('canvas-results', snapshots.after.canvas, snapshots.before.canvas);
+            renderSection('tz-results', snapshots.after.tz, snapshots.before.tz);
+            renderSection('audio-results', snapshots.after.audio, snapshots.before.audio);
+            renderSection('webrtc-results', snapshots.after.webrtc, snapshots.before.webrtc);
+            renderSection('perf-results', snapshots.after.perf, snapshots.before.perf);
+            renderSection('antidetect-results', snapshots.after.antidetect, snapshots.before.antidetect);
+            renderSection('css-results', snapshots.after.css, snapshots.before.css);
+        };
+    </script>
+</body>
+</html>

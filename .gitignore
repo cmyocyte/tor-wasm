@@ -1,0 +1,34 @@
+# Build artifacts
+/target/
+/pkg/
+*.wasm
+*.d
+
+# Dependencies
+node_modules/
+package-lock.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets - NEVER commit these
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+.env.*
+
+# Logs
+*.log
+
+# Test artifacts
+/artifacts/

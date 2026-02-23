@@ -1,0 +1,50 @@
+[package]
+name = "tor-core"
+version = "0.1.0"
+edition = "2021"
+description = "Platform-agnostic Tor client core - no browser dependencies"
+
+# Exclude from parent workspace
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Cryptography (pure Rust, WASM-compatible)
+sha2 = "0.10"
+sha1 = "0.10"
+aes = "0.8"
+ctr = "0.9"
+curve25519-dalek = { version = "4", default-features = false }
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets"] }
+hkdf = "0.12"
+hmac = "0.12"
+
+# Randomness - NOT included, platform provides via Random trait
+# getrandom = { version = "0.2", default-features = false }
+
+# Encoding
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+
+# Serialization (minimal)
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+
+# Async (minimal)
+# futures-core = { version = "0.3", default-features = false }
+
+# NO browser dependencies!
+# NO wasm-bindgen, js-sys, web-sys, gloo, etc.
+
+[features]
+default = []
+# Platform provides randomness via Random trait
+# No getrandom dependency - fully platform-agnostic
+
+[profile.release]
+opt-level = "z"      # Optimize for size
+lto = true           # Link-time optimization
+codegen-units = 1    # Better optimization
+panic = "abort"      # No panic unwinding
+strip = true         # Strip symbols
+

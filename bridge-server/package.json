@@ -1,0 +1,17 @@
+{
+  "name": "tor-bridge-server",
+  "version": "1.0.0",
+  "description": "WebSocket to TCP bridge for Tor WASM client",
+  "main": "server-collector.js",
+  "scripts": {
+    "start": "node server-collector.js",
+    "dev": "node server-collector.js"
+  },
+  "dependencies": {
+    "socks": "^2.8.7",
+    "ws": "^8.14.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
