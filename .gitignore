@@ -32,3 +32,7 @@ Thumbs.db
 
 # Test artifacts
 /artifacts/
+
+# Unpublished papers and internal research
+papers/
+user_needs.md

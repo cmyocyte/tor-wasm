@@ -220,16 +220,49 @@ node keygen.js > new-keys.txt
 # Both old and new keys should work during transition
 ```
 
+### Censorship Resistance Hardening
+
+For deployments in hostile environments (Iran, Russia, China), set these env vars:
+
+```bash
+# --- Active Probing Resistance ---
+# Health endpoint is hidden from public internet. Use management port for monitoring.
+export MANAGEMENT_PORT=9091           # Localhost-only health check (not exposed)
+export HEALTH_AUTH_TOKEN=<random>     # Fallback: token-gated health on main port
+
+# Consensus data is auth-gated and obfuscated (base64+zlib, no fingerprints visible)
+export CONSENSUS_PATH=/api/v2/config  # Non-obvious path (default: /tor/consensus)
+export BRIDGE_AUTH_TOKEN=<random>      # Required for consensus access
+
+# Cover site: makes the bridge look like a normal website
+export COVER_SITE_DIR=/path/to/site   # Serve a static site (Hugo blog, landing page)
+# OR
+export COVER_SITE_URL=https://example.com  # Reverse-proxy to a real website
+
+# --- Quiet Mode ---
+# Strips all Tor-identifying terms from logs (useful on shared hosting)
+export QUIET_MODE=1
+
+# --- DNS Leak Prevention ---
+# Bridge server uses DoH (DNS-over-HTTPS) for consensus source lookups
+# No plaintext DNS queries to torproject.org
+export CONSENSUS_SOURCE=collector     # collector (default), authorities, or static
+```
+
 ### Monitoring
 
-Both bridges expose `/health` endpoints for monitoring:
-```json
-// Bridge A
-{"status":"ok","role":"bridge-a","connections":42,"consensusCached":true}
-
-// Bridge B
-{"status":"ok","role":"bridge-b","connections":42}
+Health data is available via the management port (localhost only, not exposed externally):
+```bash
+curl http://127.0.0.1:9091/health
+# {"status":"ok","uptime":3600,"connections":42}
 ```
+
+If `MANAGEMENT_PORT` is not set, use `HEALTH_AUTH_TOKEN`:
+```bash
+curl "http://bridge:8080/health?token=<your-token>"
+```
+
+Unauthenticated requests to `/health` return the cover site page (indistinguishable from `/`).
 
 ### Fallback
 

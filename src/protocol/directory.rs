@@ -438,8 +438,8 @@ impl DirectoryManager {
             },
         });
         
-        // REAL Middle relay - Using another stable relay
-        // Using "artikel5ev6" - a stable middle relay
+        // REAL Middle/Guard relay - Using another stable relay
+        // Using "artikel5ev6" - a stable relay (also guard-eligible)
         relays.push(Relay {
             nickname: "artikel5ev6".to_string(),
             fingerprint: "1A4488A1DFC653BCB2B6BCCC74C21030E9C6E1E4".to_string(),
@@ -455,7 +455,7 @@ impl DirectoryManager {
                 bad_exit: false,
                 exit: false,
                 fast: true,
-                guard: false,
+                guard: true,
                 hs_dir: true,
                 running: true,
                 stable: true,
@@ -490,7 +490,7 @@ impl DirectoryManager {
             },
         });
         
-        // Additional middle relay for diversity
+        // Additional guard relay for diversity
         relays.push(Relay {
             nickname: "Quintex51".to_string(),
             fingerprint: "E5FCDB0B2D99AA314C5309F82E2ACF7224AB641F".to_string(),
@@ -506,7 +506,7 @@ impl DirectoryManager {
                 bad_exit: false,
                 exit: false,
                 fast: true,
-                guard: false,
+                guard: true,
                 hs_dir: true,
                 running: true,
                 stable: true,

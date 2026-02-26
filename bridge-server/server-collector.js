@@ -16,6 +16,10 @@ const tls = require('tls');
 const https = require('https');
 const http = require('http');
 const url = require('url');
+const { serveCoverSite, setStandardHeaders } = require('./cover-site');
+const { handleHealth, startManagementServer } = require('./health-auth');
+const logger = require('./logger');
+const { TrafficMonitor } = require('./traffic-monitor');
 
 // Tor consensus/descriptor cache
 let consensusCache = null;
@@ -361,11 +365,13 @@ async function fetchAndCacheConsensus() {
 const wss = new WebSocket.Server({ server });
 
 let connectionId = 0;
+const trafficMonitor = new TrafficMonitor();
 
 wss.on('connection', (ws, req) => {
   const id = ++connectionId;
   const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
   console.log(`[${id}] 🔌 New WebSocket connection from ${clientIp}`);
+  trafficMonitor.openConnection(id);
 
   // --- Global connection limit ---
   if (wss.clients.size > config.maxConnections) {
@@ -462,6 +468,7 @@ wss.on('connection', (ws, req) => {
     
     // Forward TLS data to WebSocket
     tlsSocket.on('data', (data) => {
+      trafficMonitor.recordFrame(id, data.length, 'down');
       console.log(`[${id}] ⬅️  TLS → WS: ${data.length} bytes`);
       // Debug: show first 20 bytes for 514-byte cells (likely CREATE2 response)
       if (data.length === 514) {
@@ -491,6 +498,7 @@ wss.on('connection', (ws, req) => {
   
   // Forward WebSocket messages to TLS (after TLS is established)
   ws.on('message', (data) => {
+    trafficMonitor.recordFrame(id, data.length, 'up');
     if (tlsSocket && tlsSocket.authorized !== undefined) {
       // TLS is ready, send immediately
       console.log(`[${id}] ➡️  WS → TLS: ${data.length} bytes`);
@@ -526,6 +534,7 @@ wss.on('connection', (ws, req) => {
   // Handle WebSocket close
   ws.on('close', () => {
     console.log(`[${id}] 🔌 WebSocket connection closed`);
+    trafficMonitor.closeConnection(id);
     if (tlsSocket) tlsSocket.destroy();
     tcpSocket.destroy();
   });
@@ -554,78 +563,89 @@ server.on('request', (req, res) => {
     return;
   }
   
-  if (req.url === '/health') {
-    const cacheAge = consensusCache ? Math.floor((Date.now() - consensusCache.timestamp) / 1000) : null;
-    
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+  // Health endpoint — hidden from probers, auth-gated
+  if (req.url === '/health' || req.url.startsWith('/health?')) {
+    const handled = handleHealth(req, res, {
       status: 'ok',
       uptime: process.uptime(),
       connections: wss.clients.size,
-      maxConnections: config.maxConnections,
-      rateLimitTracked: rateLimitMap.size,
-      authEnabled: !!config.authToken,
-      consensusCached: !!consensusCache,
-      consensusAge: cacheAge,
-      relayCount: consensusCache ? consensusCache.consensus.relay_count : 0,
-      source: 'collector',
-    }, null, 2));
-    return;
+    });
+    if (handled) return;
+    return serveCoverSite(req, res);
   }
-  
-  if (req.url === '/tor/consensus') {
+
+  // Consensus endpoint — auth-gated + obfuscated
+  const consensusPath = process.env.CONSENSUS_PATH || '/tor/consensus';
+  if (req.url === consensusPath || req.url.startsWith(consensusPath + '?')) {
+    // Require auth token if configured
+    if (config.authToken) {
+      const reqUrl = new URL(req.url, 'http://localhost');
+      const token = reqUrl.searchParams.get('token') ||
+        (req.headers['authorization'] || '').replace('Bearer ', '');
+      if (token !== config.authToken) {
+        return serveCoverSite(req, res);
+      }
+    }
     if (!consensusCache) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        error: 'Consensus not yet fetched',
-        message: 'Please wait a few seconds and try again',
-      }));
+      res.end(JSON.stringify({ error: 'Not ready' }));
       return;
     }
-    
-    // Update cache age
+
     consensusCache.cacheAge = Math.floor((Date.now() - consensusCache.timestamp) / 1000);
-    
-    // Trigger background refresh if stale
+
     if (Date.now() - consensusCacheTime > CACHE_TTL) {
-      console.log('⏰ Consensus cache is stale, triggering background refresh...');
+      logger.log('Config cache stale, triggering background refresh...');
       fetchAndCacheConsensus().catch(err => {
-        console.error(`Background refresh failed: ${err.message}`);
+        logger.error(`Background refresh failed: ${err.message}`);
       });
     }
-    
+
+    // Obfuscated response — compress + base64
+    const zlib = require('zlib');
+    const raw = JSON.stringify(consensusCache);
+    const compressed = zlib.deflateSync(Buffer.from(raw));
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(consensusCache, null, 2));
+    res.end(JSON.stringify({ v: '2', d: compressed.toString('base64'), t: Date.now() }));
     return;
   }
-  
-  res.writeHead(404, { 'Content-Type': 'text/plain' });
-  res.end('Not found');
+
+  // All other paths — serve cover site
+  serveCoverSite(req, res);
 });
+
+// Start management server (localhost-only health endpoint)
+startManagementServer(() => ({
+  status: 'ok',
+  uptime: process.uptime(),
+  connections: wss.clients.size,
+}));
 
 // Start server
 server.listen(config.port, '0.0.0.0', () => {
-  console.log('');
-  console.log('============================================');
-  console.log('🌉 Tor Bridge Server (Tor Collector)');
-  console.log('============================================');
-  console.log(`Port: ${config.port}`);
-  console.log(`WebSocket: ws://localhost:${config.port}?addr=HOST:PORT`);
-  console.log(`Health: http://localhost:${config.port}/health`);
-  console.log(`Consensus: http://localhost:${config.port}/tor/consensus`);
-  console.log('============================================');
-  console.log('');
-  
+  logger.banner([
+    '',
+    '============================================',
+    '  Tor Bridge Server (Tor Collector)',
+    '============================================',
+    `Port: ${config.port}`,
+    `WebSocket: ws://localhost:${config.port}?addr=HOST:PORT`,
+    `Health: http://localhost:${config.port}/health`,
+    `Consensus: http://localhost:${config.port}${process.env.CONSENSUS_PATH || '/tor/consensus'}`,
+    '============================================',
+    '',
+  ]);
+
   // Initial consensus fetch
-  console.log('🔄 Initializing Tor consensus cache...\n');
+  logger.log('Initializing config cache...');
   fetchAndCacheConsensus().catch(err => {
-    console.error(`Initial consensus fetch failed: ${err.message}`);
+    logger.error(`Initial config fetch failed: ${err.message}`);
   });
-  
+
   // Periodic refresh (every 3 hours)
   setInterval(() => {
     fetchAndCacheConsensus().catch(err => {
-      console.error(`Scheduled refresh failed: ${err.message}`);
+      logger.error(`Scheduled refresh failed: ${err.message}`);
     });
   }, CACHE_TTL);
 });

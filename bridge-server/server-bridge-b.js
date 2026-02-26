@@ -18,6 +18,27 @@
  *   BRIDGE_B_PRIVATE_KEY=<hex> node server-bridge-b.js [--port PORT]
  */
 
+// Hardening modules
+let serveCoverSite, handleHealth, startManagementServer, logger;
+try {
+  ({ serveCoverSite, setStandardHeaders } = require('./cover-site'));
+  ({ handleHealth, startManagementServer } = require('./health-auth'));
+  logger = require('./logger');
+} catch (e) {
+  // Graceful fallback if modules not present
+  serveCoverSite = (req, res) => { res.writeHead(404); res.end('Not found'); };
+  handleHealth = () => false;
+  startManagementServer = () => null;
+  logger = { log: console.log, error: console.error, warn: console.warn, banner: (l) => l.forEach(x => console.log(x)), ip: (a) => a };
+}
+
+let TrafficMonitor;
+try {
+  ({ TrafficMonitor } = require('./traffic-monitor'));
+} catch (e) {
+  TrafficMonitor = class { openConnection() {} recordFrame() {} closeConnection() { return null; } getReport() { return { connections: 0 }; } };
+}
+
 const WebSocket = require('ws');
 const net = require('net');
 const tls = require('tls');
@@ -117,11 +138,13 @@ const server = http.createServer();
 const wss = new WebSocket.Server({ server });
 
 let connectionId = 0;
+const trafficMonitor = new TrafficMonitor();
 
 wss.on('connection', (ws, req) => {
   const id = ++connectionId;
   const peerIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
   console.log(`[${id}] New connection from ${peerIp}`);
+  trafficMonitor.openConnection(id);
 
   if (wss.clients.size > config.maxConnections) {
     console.log(`[${id}] Connection limit reached`);
@@ -191,6 +214,7 @@ wss.on('connection', (ws, req) => {
 
     // TLS → WebSocket (back to Bridge A → client)
     tlsSocket.on('data', (data) => {
+      trafficMonitor.recordFrame(id, data.length, 'down');
       if (ws.readyState === WebSocket.OPEN) ws.send(data);
     });
 
@@ -206,6 +230,7 @@ wss.on('connection', (ws, req) => {
 
   // WebSocket → TLS (from Bridge A → relay)
   ws.on('message', (data) => {
+    trafficMonitor.recordFrame(id, data.length, 'up');
     if (tlsReady) {
       tlsSocket.write(data);
     } else {
@@ -219,6 +244,7 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
+    trafficMonitor.closeConnection(id);
     if (tlsSocket) tlsSocket.destroy();
     tcpSocket.destroy();
   });
@@ -233,31 +259,40 @@ wss.on('connection', (ws, req) => {
 server.on('request', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
-  if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+  // Health endpoint — hidden from probers, auth-gated
+  if (req.url === '/health' || req.url.startsWith('/health?')) {
+    const handled = handleHealth(req, res, {
       status: 'ok',
-      role: 'bridge-b',
       uptime: process.uptime(),
       connections: wss.clients.size,
-    }));
-    return;
+    });
+    if (handled) return;
+    return serveCoverSite(req, res);
   }
 
-  res.writeHead(404);
-  res.end('Not found');
+  // All other paths — serve cover site
+  serveCoverSite(req, res);
 });
+
+// Start management server (localhost-only health endpoint)
+startManagementServer(() => ({
+  status: 'ok',
+  uptime: process.uptime(),
+  connections: wss.clients.size,
+}));
 
 // --- Start ---
 server.listen(config.port, '0.0.0.0', () => {
-  console.log('');
-  console.log('============================================');
-  console.log('  Bridge B (Relay-Facing, Blinded)');
-  console.log('============================================');
-  console.log(`  Port: ${config.port}`);
-  console.log(`  Private key loaded: ${config.privateKeyHex.substring(0, 8)}...`);
-  console.log(`  Health: http://localhost:${config.port}/health`);
-  console.log('============================================');
-  console.log('');
-  console.log('Waiting for connections from Bridge A...');
+  logger.banner([
+    '',
+    '============================================',
+    '  Bridge B (Relay-Facing, Blinded)',
+    '============================================',
+    `  Port: ${config.port}`,
+    `  Private key loaded: ${config.privateKeyHex.substring(0, 8)}...`,
+    `  Health: http://localhost:${config.port}/health`,
+    '============================================',
+    '',
+    'Waiting for connections from Bridge A...',
+  ]);
 });

@@ -3,21 +3,30 @@
 //! This module provides transport that allows WASM code to connect to
 //! Tor relays through bridge infrastructure.
 //!
-//! Supports three transport modes:
+//! Supports four transport modes:
 //! - **Direct mode:** WebSocket with `?addr=1.2.3.4:9001` to a single bridge (simple, legacy)
 //! - **Blinded mode:** WebSocket with encrypted relay address under Bridge B's public key.
 //!   Bridge A forwards the opaque blob to Bridge B. Neither bridge alone can
 //!   correlate client IP with guard relay IP.
 //! - **Peer bridge mode:** WebRTC DataChannel through a volunteer's browser tab.
 //!   Looks like a video call to DPI equipment. No installation required on either side.
+//! - **meek mode:** HTTP POST/response bodies through a CDN. Censor sees only
+//!   HTTPS to a CDN IP — indistinguishable from normal website traffic.
+//!   Fallback when WebSocket and ECH are both blocked.
 
 pub mod websocket;
 pub mod bridge_blind;
 pub mod webrtc;
+pub mod meek;
+pub mod webtunnel;
+pub mod unified;
 
 pub use websocket::WasmTcpStream;
 pub use bridge_blind::blind_target_address;
 pub use webrtc::WasmRtcStream;
+pub use meek::WasmMeekStream;
+pub use webtunnel::WasmWebTunnelStream;
+pub use unified::TransportStream;
 
 /// Transport mode for connecting to the bridge
 #[derive(Debug, Clone, PartialEq)]
@@ -26,12 +35,16 @@ pub enum TransportMode {
     WebSocket,
     /// WebRTC through a volunteer peer proxy (Snowflake-like)
     WebRtc,
+    /// meek: HTTP POST/response through CDN (fallback for WebSocket-blocked networks)
+    Meek,
+    /// WebTunnel: HTTPS WebSocket upgrade on a secret path, disguised as normal website
+    WebTunnel,
 }
 
 /// Configuration for bridge server
 #[derive(Debug, Clone)]
 pub struct BridgeConfig {
-    /// Bridge server WebSocket URL (Bridge A in blinded mode, or single bridge in direct mode)
+    /// Bridge server URL (WebSocket URL for WS/WebRTC, HTTP URL for meek)
     pub bridge_url: String,
 
     /// Bridge B's X25519 public key (32 bytes). If set, enables blinded mode:
@@ -40,6 +53,15 @@ pub struct BridgeConfig {
 
     /// Broker URL for peer bridge signaling. If set, enables WebRTC transport.
     pub broker_url: Option<String>,
+
+    /// meek bridge URL. If set, used as fallback when WebSocket fails.
+    pub meek_url: Option<String>,
+
+    /// WebTunnel bridge URL. If set, used in fallback chain between WebSocket and meek.
+    pub webtunnel_url: Option<String>,
+
+    /// WebTunnel secret path for WebSocket upgrade (e.g., "/ws-a1b2c3d4").
+    pub webtunnel_path: Option<String>,
 
     /// Preferred transport mode
     pub transport: TransportMode,
@@ -51,6 +73,9 @@ impl Default for BridgeConfig {
             bridge_url: "ws://localhost:8080".to_string(),
             bridge_b_pubkey: None,
             broker_url: None,
+            meek_url: None,
+            webtunnel_url: None,
+            webtunnel_path: None,
             transport: TransportMode::WebSocket,
         }
     }
@@ -63,6 +88,9 @@ impl BridgeConfig {
             bridge_url,
             bridge_b_pubkey: None,
             broker_url: None,
+            meek_url: None,
+            webtunnel_url: None,
+            webtunnel_path: None,
             transport: TransportMode::WebSocket,
         }
     }
@@ -76,6 +104,9 @@ impl BridgeConfig {
             bridge_url: bridge_a_url,
             bridge_b_pubkey: Some(bridge_b_pubkey),
             broker_url: None,
+            meek_url: None,
+            webtunnel_url: None,
+            webtunnel_path: None,
             transport: TransportMode::WebSocket,
         }
     }
@@ -94,8 +125,59 @@ impl BridgeConfig {
             bridge_url,
             bridge_b_pubkey,
             broker_url: Some(broker_url),
+            meek_url: None,
+            webtunnel_url: None,
+            webtunnel_path: None,
             transport: TransportMode::WebRtc,
         }
+    }
+
+    /// Create a meek bridge configuration (CDN-tunneled HTTP transport).
+    ///
+    /// `meek_url` is the meek bridge HTTP(S) URL (behind a CDN like Cloudflare).
+    pub fn meek(meek_url: String) -> Self {
+        Self {
+            bridge_url: meek_url.clone(),
+            bridge_b_pubkey: None,
+            broker_url: None,
+            meek_url: Some(meek_url),
+            webtunnel_url: None,
+            webtunnel_path: None,
+            transport: TransportMode::Meek,
+        }
+    }
+
+    /// Create a WebTunnel bridge configuration.
+    ///
+    /// `url` is the bridge HTTPS URL (e.g., `wss://innocent-blog.com`).
+    /// `secret_path` is the secret path for WebSocket upgrade (e.g., `/ws-a1b2c3d4`).
+    pub fn webtunnel(url: String, secret_path: String) -> Self {
+        Self {
+            bridge_url: url.clone(),
+            bridge_b_pubkey: None,
+            broker_url: None,
+            meek_url: None,
+            webtunnel_url: Some(url),
+            webtunnel_path: Some(secret_path),
+            transport: TransportMode::WebTunnel,
+        }
+    }
+
+    /// Add a meek fallback URL to any existing configuration.
+    ///
+    /// When the primary transport fails, the client can fall back to meek.
+    pub fn with_meek_fallback(mut self, meek_url: String) -> Self {
+        self.meek_url = Some(meek_url);
+        self
+    }
+
+    /// Add a WebTunnel fallback to any existing configuration.
+    ///
+    /// When WebSocket fails, the client can try WebTunnel before meek.
+    pub fn with_webtunnel_fallback(mut self, url: String, secret_path: String) -> Self {
+        self.webtunnel_url = Some(url);
+        self.webtunnel_path = Some(secret_path);
+        self
     }
 
     /// Build WebSocket URL for connecting to a Tor relay.
@@ -120,4 +202,3 @@ impl BridgeConfig {
         }
     }
 }
-

@@ -1,0 +1,2255 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Browse</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#1a1a2e">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg: #1a1a2e;
+            --surface: #16213e;
+            --bar: #0f3460;
+            --text: #e2e8f0;
+            --muted: #718096;
+            --accent: #6366f1;
+            --green: #48bb78;
+            --yellow: #ed8936;
+            --red: #f56565;
+        }
+
+        html, body {
+            height: 100%;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        /* --- App Shell --- */
+        #app {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            height: 100dvh;
+        }
+
+        /* --- URL Bar (top) --- */
+        #url-bar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 10px;
+            padding-top: calc(env(safe-area-inset-top, 8px) + 8px);
+            background: var(--surface);
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+            flex-shrink: 0;
+        }
+
+        #url-input {
+            flex: 1;
+            background: var(--bar);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: var(--text);
+            font-size: 15px;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        #url-input:focus {
+            border-color: var(--accent);
+        }
+
+        #url-input::placeholder {
+            color: var(--muted);
+        }
+
+        /* --- Content Area --- */
+        #content {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            background: white;
+        }
+
+        #page-frame {
+            width: 100%;
+            height: 100%;
+            border: none;
+            background: white;
+        }
+
+        /* --- Loading overlay inside content area --- */
+        #loading {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--bg);
+            z-index: 10;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        #loading.hidden { display: none; }
+
+        .spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid rgba(255,255,255,0.1);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        #loading-text {
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        /* --- Boot progress steps --- */
+        .boot-brand {
+            font-size: 22px;
+            font-weight: 600;
+            color: var(--text);
+            letter-spacing: -0.3px;
+        }
+
+        .boot-tagline {
+            font-size: 13px;
+            color: var(--muted);
+            margin-top: 2px;
+            margin-bottom: 28px;
+        }
+
+        .boot-steps {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            text-align: left;
+            margin-bottom: 16px;
+        }
+
+        .boot-step {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 13px;
+            color: var(--muted);
+            opacity: 0.35;
+            transition: opacity 0.3s, color 0.3s;
+        }
+
+        .boot-step.active {
+            opacity: 1;
+            color: var(--text);
+        }
+
+        .boot-step.done {
+            opacity: 0.7;
+            color: var(--green);
+        }
+
+        .step-dot {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.15);
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: border-color 0.3s, background 0.3s;
+        }
+
+        .boot-step.active .step-dot {
+            border-color: var(--accent);
+            border-top-color: transparent;
+            animation: spin 0.8s linear infinite;
+        }
+
+        .boot-step.done .step-dot {
+            border-color: var(--green);
+            background: var(--green);
+        }
+
+        .boot-step.done .step-dot::after {
+            content: '';
+            width: 5px;
+            height: 9px;
+            border: solid white;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
+            margin-top: -2px;
+        }
+
+        /* --- Page loading indicator --- */
+        #page-loading {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--accent), #818cf8);
+            z-index: 20;
+            transition: width 0.3s ease;
+            width: 0;
+            box-shadow: 0 0 8px rgba(99, 102, 241, 0.6);
+        }
+
+        #page-loading.active {
+            animation: progress 2s ease-out forwards;
+        }
+
+        #page-loading.done {
+            width: 100%;
+            opacity: 0;
+            transition: width 0.1s, opacity 0.3s 0.1s;
+        }
+
+        @keyframes progress {
+            0% { width: 0; }
+            20% { width: 30%; }
+            50% { width: 60%; }
+            80% { width: 80%; }
+            100% { width: 90%; }
+        }
+
+        /* --- Resource counter (shown during sub-resource loading) --- */
+        #resource-counter {
+            position: absolute;
+            top: 6px;
+            right: 10px;
+            font-size: 11px;
+            color: var(--accent);
+            z-index: 21;
+            opacity: 0;
+            transition: opacity 0.3s;
+            font-family: monospace;
+            background: rgba(0,0,0,0.6);
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+
+        #resource-counter.visible {
+            opacity: 1;
+        }
+
+        /* --- Bottom Bar --- */
+        #bottom-bar {
+            display: flex;
+            align-items: center;
+            padding: 8px 12px;
+            padding-bottom: calc(env(safe-area-inset-bottom, 8px) + 8px);
+            background: var(--surface);
+            border-top: 1px solid rgba(255,255,255,0.06);
+            flex-shrink: 0;
+            gap: 4px;
+        }
+
+        .nav-btn {
+            background: none;
+            border: none;
+            color: var(--muted);
+            font-size: 20px;
+            padding: 8px 12px;
+            cursor: pointer;
+            border-radius: 6px;
+            line-height: 1;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .nav-btn:active {
+            background: rgba(255,255,255,0.05);
+        }
+
+        .nav-btn:disabled {
+            opacity: 0.3;
+            cursor: default;
+        }
+
+        .nav-btn:disabled:active {
+            background: none;
+        }
+
+        .nav-btn svg {
+            display: block;
+        }
+
+        #btn-share {
+            position: relative;
+        }
+
+        .share-toast {
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--accent);
+            color: white;
+            font-size: 11px;
+            padding: 4px 10px;
+            border-radius: 4px;
+            white-space: nowrap;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s;
+        }
+
+        .share-toast.show {
+            opacity: 1;
+        }
+
+        #status {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            cursor: pointer;
+            padding: 6px;
+            border-radius: 6px;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        #status:active {
+            background: rgba(255,255,255,0.05);
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--red);
+            flex-shrink: 0;
+        }
+
+        .dot.ok { background: var(--green); }
+        .dot.wait {
+            background: var(--yellow);
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        #status-label {
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        /* --- Error page --- */
+        .error-page {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            background: var(--bg);
+            flex-direction: column;
+            gap: 12px;
+            padding: 40px;
+            text-align: center;
+        }
+
+        .error-page h2 {
+            color: var(--text);
+            font-size: 18px;
+            font-weight: 500;
+        }
+
+        .error-page p {
+            color: var(--muted);
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        /* --- Identity panel (popup on status click) --- */
+        #identity-panel {
+            position: fixed;
+            bottom: 60px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--surface);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 12px;
+            padding: 16px 20px;
+            z-index: 100;
+            display: none;
+            min-width: 200px;
+            text-align: center;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+        }
+
+        #identity-panel.show { display: block; }
+
+        #identity-panel p {
+            font-size: 13px;
+            color: var(--muted);
+            margin-bottom: 12px;
+        }
+
+        #new-identity-btn {
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            width: 100%;
+        }
+
+        #new-identity-btn:active {
+            opacity: 0.8;
+        }
+
+        /* --- Settings Panel (Bridge Manager) --- */
+        #settings-panel {
+            position: fixed;
+            inset: 0;
+            background: var(--bg);
+            z-index: 200;
+            display: none;
+            flex-direction: column;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        #settings-panel.show {
+            display: flex;
+        }
+
+        .settings-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 20px;
+            padding-top: calc(env(safe-area-inset-top, 16px) + 16px);
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+            background: var(--surface);
+            flex-shrink: 0;
+        }
+
+        .settings-header h2 {
+            font-size: 17px;
+            font-weight: 600;
+        }
+
+        .settings-close {
+            background: none;
+            border: none;
+            color: var(--muted);
+            font-size: 24px;
+            cursor: pointer;
+            padding: 4px 8px;
+            line-height: 1;
+        }
+
+        .settings-section {
+            padding: 16px 20px;
+        }
+
+        .settings-section h3 {
+            font-size: 14px;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+        }
+
+        .bridge-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .bridge-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            background: var(--surface);
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.06);
+        }
+
+        .bridge-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .bridge-dot.ok { background: var(--green); }
+        .bridge-dot.err { background: var(--red); }
+        .bridge-dot.unknown { background: var(--muted); }
+
+        .bridge-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .bridge-url {
+            font-size: 13px;
+            color: var(--text);
+            word-break: break-all;
+        }
+
+        .bridge-meta {
+            font-size: 11px;
+            color: var(--muted);
+            margin-top: 2px;
+        }
+
+        .bridge-delete {
+            background: none;
+            border: none;
+            color: var(--red);
+            font-size: 18px;
+            cursor: pointer;
+            padding: 4px 8px;
+            opacity: 0.6;
+        }
+
+        .bridge-delete:hover { opacity: 1; }
+
+        .bridge-empty {
+            text-align: center;
+            color: var(--muted);
+            font-size: 13px;
+            padding: 20px;
+        }
+
+        #bridge-input {
+            width: 100%;
+            background: var(--surface);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: var(--text);
+            font-size: 13px;
+            font-family: monospace;
+            resize: vertical;
+            min-height: 60px;
+            outline: none;
+        }
+
+        #bridge-input:focus {
+            border-color: var(--accent);
+        }
+
+        #bridge-input::placeholder {
+            color: var(--muted);
+        }
+
+        .bridge-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .bridge-actions button {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+        }
+
+        .btn-add-bridge {
+            background: var(--accent);
+            color: white;
+        }
+
+        .btn-add-bridge:active { opacity: 0.8; }
+
+        .btn-scan-qr {
+            background: var(--bar);
+            color: var(--text);
+        }
+
+        .btn-scan-qr:active { opacity: 0.8; }
+
+        #bridge-status-msg {
+            font-size: 12px;
+            margin-top: 8px;
+            min-height: 18px;
+        }
+
+        #bridge-status-msg.ok { color: var(--green); }
+        #bridge-status-msg.err { color: var(--red); }
+
+        /* --- RTL Support --- */
+        [dir="rtl"] #url-bar { direction: rtl; text-align: right; }
+        [dir="rtl"] .boot-step { direction: rtl; text-align: right; }
+        [dir="rtl"] .boot-step .step-dot { margin-left: 8px; margin-right: 0; }
+        [dir="rtl"] .boot-brand { direction: rtl; }
+        [dir="rtl"] .boot-tagline { direction: rtl; }
+        [dir="rtl"] #status { direction: rtl; }
+        [dir="rtl"] #bottom-bar { direction: rtl; }
+        [dir="rtl"] #identity-panel { direction: rtl; text-align: right; }
+        [dir="rtl"] #settings-panel { direction: rtl; text-align: right; }
+        [dir="rtl"] .bridge-actions { direction: rtl; }
+
+        /* Language selector */
+        #lang-select {
+            position: fixed;
+            top: 8px;
+            right: 8px;
+            z-index: 1000;
+            background: var(--bar);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-size: 11px;
+            cursor: pointer;
+            opacity: 0.7;
+        }
+        #lang-select:hover { opacity: 1; }
+        [dir="rtl"] #lang-select { right: auto; left: 8px; }
+    </style>
+</head>
+<body>
+    <select id="lang-select">
+        <option value="en">EN</option>
+        <option value="fa">FA</option>
+        <option value="ru">RU</option>
+        <option value="zh">ZH</option>
+    </select>
+
+    <div id="app">
+        <!-- URL bar -->
+        <div id="url-bar">
+            <input
+                type="url"
+                id="url-input"
+                placeholder="Search or enter address"
+                autocapitalize="off"
+                autocomplete="off"
+                spellcheck="false"
+                enterkeyhint="go"
+                disabled
+            >
+        </div>
+
+        <!-- Content area -->
+        <div id="content">
+            <div id="page-loading"></div>
+            <div id="resource-counter"></div>
+            <div id="loading">
+                <div class="boot-brand">Private Browser</div>
+                <div class="boot-tagline">Your traffic is routed through 3 encrypted relays</div>
+                <div class="boot-steps" id="boot-steps">
+                    <div class="boot-step" data-step="init"><span class="step-dot"></span>Loading encryption module</div>
+                    <div class="boot-step" data-step="defense"><span class="step-dot"></span>Applying fingerprint defenses</div>
+                    <div class="boot-step" data-step="bridge"><span class="step-dot"></span>Connecting to bridge server</div>
+                    <div class="boot-step" data-step="circuit"><span class="step-dot"></span>Building encrypted circuit through Tor</div>
+                </div>
+                <div id="loading-text"></div>
+            </div>
+            <iframe id="page-frame" sandbox="allow-same-origin allow-scripts allow-forms"></iframe>
+        </div>
+
+        <!-- Bottom bar -->
+        <div id="bottom-bar">
+            <button class="nav-btn" id="btn-back" disabled title="Back">&#9664;</button>
+            <button class="nav-btn" id="btn-forward" disabled title="Forward">&#9654;</button>
+            <div id="status">
+                <div class="dot wait" id="dot"></div>
+                <span id="status-label">Connecting...</span>
+            </div>
+            <button class="nav-btn" id="btn-reload" disabled title="Reload">&#8635;</button>
+            <button class="nav-btn" id="btn-share" title="Share">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            </button>
+            <button class="nav-btn" id="btn-settings" title="Settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+        </div>
+
+        <!-- Identity panel (hidden) -->
+        <div id="identity-panel">
+            <p id="identity-info">Routed through 3 relays</p>
+            <button id="new-identity-btn">New Identity</button>
+            <div style="margin-top: 8px; font-size: 12px;">
+                <label for="traffic-profile" style="opacity: 0.7;">Traffic profile:</label>
+                <select id="traffic-profile" style="font-size: 12px; background: #2d2d2d; color: #ccc; border: 1px solid #444; border-radius: 3px; padding: 2px 4px;">
+                    <option value="none">None (fastest)</option>
+                    <option value="chat">Chat (WhatsApp-like)</option>
+                    <option value="ticker">Ticker (data feed)</option>
+                    <option value="video">Video (call-like)</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Settings panel (bridge manager) -->
+        <div id="settings-panel">
+            <div class="settings-header">
+                <h2 id="settings-title">Settings</h2>
+                <button class="settings-close" id="settings-close-btn">&times;</button>
+            </div>
+
+            <div class="settings-section">
+                <h3 id="bridges-heading">Bridges</h3>
+                <div id="bridge-list" class="bridge-list">
+                    <div class="bridge-empty" id="bridge-empty-msg">No custom bridges configured</div>
+                </div>
+
+                <textarea id="bridge-input" rows="3"
+                    placeholder="Paste bridge URL, JSON config, or scan QR code..."></textarea>
+                <div id="bridge-status-msg"></div>
+
+                <div class="bridge-actions">
+                    <button class="btn-add-bridge" id="btn-add-bridge">Add Bridge</button>
+                    <button class="btn-scan-qr" id="btn-scan-qr">Scan QR</button>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h3>Traffic</h3>
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <label for="traffic-profile-settings" style="font-size:13px;color:var(--muted);">Profile:</label>
+                    <select id="traffic-profile-settings" style="font-size:13px;background:var(--bar);color:var(--text);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 10px;flex:1;">
+                        <option value="none">None (fastest)</option>
+                        <option value="chat">Chat (WhatsApp-like)</option>
+                        <option value="ticker">Ticker (data feed)</option>
+                        <option value="video">Video (call-like)</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- i18n Loader ---
+        // Detects browser language, loads translations, applies RTL direction.
+        // Stores language preference in localStorage.
+        (function() {
+            const SUPPORTED = ['en', 'fa', 'ru', 'zh'];
+            const TRANSLATIONS = {};
+            let currentLang = 'en';
+
+            function detectLanguage() {
+                const stored = localStorage.getItem('lang');
+                if (stored && SUPPORTED.includes(stored)) return stored;
+                const nav = (navigator.language || 'en').slice(0, 2).toLowerCase();
+                return SUPPORTED.includes(nav) ? nav : 'en';
+            }
+
+            async function loadTranslation(lang) {
+                if (TRANSLATIONS[lang]) return TRANSLATIONS[lang];
+                try {
+                    const resp = await fetch(`i18n/${lang}.json`);
+                    if (!resp.ok) return null;
+                    const data = await resp.json();
+                    TRANSLATIONS[lang] = data;
+                    return data;
+                } catch (e) {
+                    return null;
+                }
+            }
+
+            function applyTranslation(t) {
+                if (!t) return;
+
+                // Direction
+                document.documentElement.lang = t.lang;
+                document.documentElement.dir = t.dir;
+
+                // Boot sequence
+                const brand = document.querySelector('.boot-brand');
+                const tagline = document.querySelector('.boot-tagline');
+                if (brand) brand.textContent = t.brand;
+                if (tagline) tagline.textContent = t.tagline;
+
+                const steps = document.querySelectorAll('.boot-step');
+                const stepKeys = ['init', 'defense', 'bridge', 'circuit'];
+                steps.forEach((step, i) => {
+                    if (stepKeys[i] && t.boot[stepKeys[i]]) {
+                        // Preserve the step-dot span
+                        const dot = step.querySelector('.step-dot');
+                        step.textContent = '';
+                        if (dot) step.appendChild(dot);
+                        step.appendChild(document.createTextNode(t.boot[stepKeys[i]]));
+                    }
+                });
+
+                // Status
+                const statusLabel = document.getElementById('status-label');
+                if (statusLabel && statusLabel.textContent === 'Connecting...') {
+                    statusLabel.textContent = t.status.connecting;
+                }
+
+                // URL placeholder
+                const urlInput = document.getElementById('url-input');
+                if (urlInput && t.ui) {
+                    urlInput.placeholder = t.ui.urlPlaceholder;
+                }
+
+                // Buttons
+                const backBtn = document.getElementById('btn-back');
+                const fwdBtn = document.getElementById('btn-forward');
+                const reloadBtn = document.getElementById('btn-reload');
+                if (backBtn && t.ui) backBtn.title = t.ui.back;
+                if (fwdBtn && t.ui) fwdBtn.title = t.ui.forward;
+                if (reloadBtn && t.ui) reloadBtn.title = t.ui.reload;
+                const shareBtn = document.getElementById('btn-share');
+                if (shareBtn && t.ui) shareBtn.title = t.ui.share || 'Share';
+                const settingsBtn = document.getElementById('btn-settings');
+                if (settingsBtn && t.ui) settingsBtn.title = t.ui.settings;
+                const settingsTitle = document.getElementById('settings-title');
+                if (settingsTitle && t.ui) settingsTitle.textContent = t.ui.settings;
+                const bridgesHeading = document.getElementById('bridges-heading');
+                if (bridgesHeading && t.bridges) bridgesHeading.textContent = t.bridges.heading || 'Bridges';
+                const bridgeEmptyMsg = document.getElementById('bridge-empty-msg');
+                if (bridgeEmptyMsg && t.bridges) bridgeEmptyMsg.textContent = t.bridges.empty || 'No custom bridges configured';
+                const bridgeInput = document.getElementById('bridge-input');
+                if (bridgeInput && t.bridges) bridgeInput.placeholder = t.bridges.placeholder || 'Paste bridge URL or JSON config...';
+                const btnAddBridge = document.getElementById('btn-add-bridge');
+                if (btnAddBridge && t.bridges) btnAddBridge.textContent = t.bridges.add || 'Add Bridge';
+                const btnScanQr = document.getElementById('btn-scan-qr');
+                if (btnScanQr && t.bridges) btnScanQr.textContent = t.bridges.scanQr || 'Scan QR';
+
+                // Identity panel
+                const newIdBtn = document.getElementById('new-identity-btn');
+                if (newIdBtn && t.ui) newIdBtn.textContent = t.ui.newIdentity;
+
+                // Language selector
+                const sel = document.getElementById('lang-select');
+                if (sel) sel.value = t.lang;
+            }
+
+            // Expose for use by the main script
+            window._i18n = {
+                t: function(key) {
+                    const t = TRANSLATIONS[currentLang] || TRANSLATIONS['en'];
+                    if (!t) return key;
+                    const parts = key.split('.');
+                    let val = t;
+                    for (const p of parts) {
+                        val = val?.[p];
+                        if (val === undefined) return key;
+                    }
+                    return val;
+                },
+                format: function(key, vars) {
+                    let s = window._i18n.t(key);
+                    if (typeof s !== 'string') return key;
+                    for (const [k, v] of Object.entries(vars)) {
+                        s = s.replace('{' + k + '}', v);
+                    }
+                    return s;
+                },
+                lang: function() { return currentLang; },
+            };
+
+            // Initialize
+            currentLang = detectLanguage();
+            loadTranslation(currentLang).then(t => {
+                if (t) applyTranslation(t);
+            });
+
+            // Also preload English as fallback
+            loadTranslation('en');
+
+            // Language selector handler
+            document.getElementById('lang-select').addEventListener('change', async (e) => {
+                currentLang = e.target.value;
+                localStorage.setItem('lang', currentLang);
+                const t = await loadTranslation(currentLang);
+                if (t) applyTranslation(t);
+            });
+        })();
+    </script>
+
+    <script type="module">
+        import init, { TorClient, apply_fingerprint_defense } from '../pkg/tor_wasm.js';
+
+        // --- Configuration ---
+        const BRIDGES = [
+            'ws://localhost:8080',           // Local dev
+            'wss://bridge-us.example.com',   // Production (replace at deploy)
+            'wss://bridge-eu.example.com',   // Fallback (replace at deploy)
+        ];
+        const BRIDGE_TIMEOUT = 15000;
+
+        // WebTunnel bridges (HTTPS disguised as normal websites — used when WS bridges fail)
+        const WEBTUNNEL_BRIDGES = [
+            // { url: 'wss://innocent-blog.com', path: '/ws-a1b2c3d4' },  // Replace at deploy
+            // { url: 'wss://docs-portal.example.com', path: '/ws-e5f6g7h8' },
+        ];
+        const WEBTUNNEL_TIMEOUT = 15000;
+
+        // HMAC-SHA256 challenge for probe-resistant WebTunnel handshake.
+        // Matches server-webtunnel.js: v1.<hmac_32hex>.<unix_timestamp>
+        async function computeWebTunnelHmac(secretPath) {
+            const ts = Math.floor(Date.now() / 1000).toString();
+            const key = await crypto.subtle.importKey(
+                'raw',
+                new TextEncoder().encode(secretPath),
+                { name: 'HMAC', hash: 'SHA-256' },
+                false,
+                ['sign']
+            );
+            const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(ts));
+            const hex = Array.from(new Uint8Array(sig).slice(0, 16))
+                .map(b => b.toString(16).padStart(2, '0')).join('');
+            return 'v1.' + hex + '.' + ts;
+        }
+
+        // meek fallback bridges (HTTP POST through CDN — used when all WS + WebTunnel fail)
+        const MEEK_BRIDGES = [
+            'https://meek-us.example.com',   // Production meek (replace at deploy)
+            'https://meek-eu.example.com',   // Fallback meek (replace at deploy)
+        ];
+        const MEEK_TIMEOUT = 20000; // meek is slower (HTTP round-trips)
+
+        // Auto-detect Cloudflare Worker: if served from *.workers.dev or *.pages.dev,
+        // use the same origin as a meek bridge (the Worker acts as both app host and relay)
+        if (location.hostname.endsWith('.workers.dev') || location.hostname.endsWith('.pages.dev')) {
+            MEEK_BRIDGES.unshift(location.origin);
+        }
+
+        // Lox bridge distribution (trust-tiered credential system)
+        const LOX_AUTHORITY_URL = null; // Set to 'https://lox.example.com' to enable
+        const LOX_IDB_DB = 'tor-wasm-lox';
+        const LOX_IDB_STORE = 'lox-credentials';
+
+        // --- Lox Helper Functions ---
+        async function getLoxBridge() {
+            if (!LOX_AUTHORITY_URL) return null;
+            try {
+                // Check IndexedDB for stored credential
+                const cred = await loxLoadCredential();
+                if (!cred || !cred.bridge_url) return null;
+                console.log(`Lox: found stored bridge (trust level ${cred.trust_level})`);
+                return cred.bridge_url;
+            } catch (e) {
+                console.warn('Lox: credential load failed:', e);
+                return null;
+            }
+        }
+
+        async function loxLoadCredential() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(LOX_IDB_DB, 1);
+                req.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains(LOX_IDB_STORE)) {
+                        db.createObjectStore(LOX_IDB_STORE);
+                    }
+                };
+                req.onsuccess = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains(LOX_IDB_STORE)) {
+                        db.close();
+                        resolve(null);
+                        return;
+                    }
+                    const tx = db.transaction(LOX_IDB_STORE, 'readonly');
+                    const store = tx.objectStore(LOX_IDB_STORE);
+                    const getReq = store.get('current');
+                    getReq.onsuccess = () => { db.close(); resolve(getReq.result || null); };
+                    getReq.onerror = () => { db.close(); resolve(null); };
+                };
+                req.onerror = () => resolve(null);
+            });
+        }
+
+        async function loxReportBlockage(bridgeUrl) {
+            if (!LOX_AUTHORITY_URL) return;
+            try {
+                const cred = await loxLoadCredential();
+                if (!cred) return;
+                await fetch(`${LOX_AUTHORITY_URL}/lox/check-blockage`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id: cred.id,
+                        credential: cred.credential,
+                        bridge_fingerprint: cred.bridge_fingerprint || '',
+                    }),
+                });
+                console.log('Lox: blockage reported');
+            } catch (e) {
+                console.warn('Lox: blockage report failed:', e);
+            }
+        }
+
+        // --- State ---
+        let client = null;
+        let ready = false;
+        let fetching = false;  // Guard: prevents concurrent WASM calls
+        let history = [];
+        let historyIndex = -1;
+        let currentUrl = '';
+        let pendingNav = null;  // Buffered navigation when fetching is busy
+        let currentBlobUrl = null;  // Track blob URL for cleanup
+        let currentTransport = 'websocket'; // Active transport: 'websocket' | 'meek'
+        let keepaliveTimer = null; // Circuit keepalive timer (runs when tab hidden)
+        let lastVisibleTime = Date.now(); // Track when tab was last visible
+
+        // --- DOM refs ---
+        const urlInput = document.getElementById('url-input');
+        const pageFrame = document.getElementById('page-frame');
+        const loadingOverlay = document.getElementById('loading');
+        const loadingText = document.getElementById('loading-text');
+        const pageLoadingBar = document.getElementById('page-loading');
+        const resourceCounter = document.getElementById('resource-counter');
+        const dot = document.getElementById('dot');
+        const statusLabel = document.getElementById('status-label');
+        const btnBack = document.getElementById('btn-back');
+        const btnForward = document.getElementById('btn-forward');
+        const btnReload = document.getElementById('btn-reload');
+        const identityPanel = document.getElementById('identity-panel');
+        const identityInfo = document.getElementById('identity-info');
+        const newIdentityBtn = document.getElementById('new-identity-btn');
+        const trafficProfileSelect = document.getElementById('traffic-profile');
+
+        // Traffic profile selector — changes how outgoing frames look to DPI
+        trafficProfileSelect.addEventListener('change', () => {
+            const profile = trafficProfileSelect.value;
+            console.log('Traffic profile set to:', profile);
+            // The profile is applied when the WASM client is available
+            // For now, store the preference for the next connection
+            localStorage.setItem('tor-wasm-traffic-profile', profile);
+        });
+
+        // Restore saved profile
+        const savedProfile = localStorage.getItem('tor-wasm-traffic-profile');
+        if (savedProfile) {
+            trafficProfileSelect.value = savedProfile;
+        }
+
+        // --- Share Button ---
+        document.getElementById('btn-share').addEventListener('click', async () => {
+            const shareUrl = location.href;
+            const shareTitle = window._i18n.t('share.title');
+            const shareText = window._i18n.t('share.text');
+
+            if (navigator.share) {
+                try {
+                    await navigator.share({ title: shareTitle, text: shareText, url: shareUrl });
+                } catch (e) {
+                    // User cancelled or share failed — ignore
+                }
+            } else {
+                // Desktop fallback: copy URL to clipboard
+                try {
+                    await navigator.clipboard.writeText(shareUrl);
+                    showShareToast(window._i18n.t('share.copied'));
+                } catch (e) {
+                    // Fallback for older browsers
+                    const ta = document.createElement('textarea');
+                    ta.value = shareUrl;
+                    ta.style.position = 'fixed';
+                    ta.style.opacity = '0';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(ta);
+                    showShareToast(window._i18n.t('share.copied'));
+                }
+            }
+        });
+
+        function showShareToast(text) {
+            const btn = document.getElementById('btn-share');
+            let toast = btn.querySelector('.share-toast');
+            if (!toast) {
+                toast = document.createElement('span');
+                toast.className = 'share-toast';
+                btn.appendChild(toast);
+            }
+            toast.textContent = text;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 1500);
+        }
+
+        // --- Bridge Manager (IndexedDB + Settings Panel) ---
+        const BRIDGE_IDB_DB = 'tor-wasm-bridges';
+        const BRIDGE_IDB_STORE = 'bridges';
+
+        function openBridgeDB() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(BRIDGE_IDB_DB, 1);
+                req.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains(BRIDGE_IDB_STORE)) {
+                        db.createObjectStore(BRIDGE_IDB_STORE, { keyPath: 'id' });
+                    }
+                };
+                req.onsuccess = (e) => resolve(e.target.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function loadBridgesFromIDB() {
+            try {
+                const db = await openBridgeDB();
+                return new Promise((resolve) => {
+                    const tx = db.transaction(BRIDGE_IDB_STORE, 'readonly');
+                    const store = tx.objectStore(BRIDGE_IDB_STORE);
+                    const req = store.getAll();
+                    req.onsuccess = () => { db.close(); resolve(req.result || []); };
+                    req.onerror = () => { db.close(); resolve([]); };
+                });
+            } catch (e) {
+                return [];
+            }
+        }
+
+        async function saveBridgeToIDB(bridge) {
+            const db = await openBridgeDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(BRIDGE_IDB_STORE, 'readwrite');
+                const store = tx.objectStore(BRIDGE_IDB_STORE);
+                store.put(bridge);
+                tx.oncomplete = () => { db.close(); resolve(); };
+                tx.onerror = () => { db.close(); reject(tx.error); };
+            });
+        }
+
+        async function deleteBridgeFromIDB(id) {
+            const db = await openBridgeDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(BRIDGE_IDB_STORE, 'readwrite');
+                const store = tx.objectStore(BRIDGE_IDB_STORE);
+                store.delete(id);
+                tx.oncomplete = () => { db.close(); resolve(); };
+                tx.onerror = () => { db.close(); reject(tx.error); };
+            });
+        }
+
+        // Bridge input parser — auto-detect format
+        function parseBridgeInput(text) {
+            const trimmed = text.trim();
+            if (!trimmed) return null;
+
+            // Try JSON first
+            try {
+                const obj = JSON.parse(trimmed);
+                // QR format from qr-generator.js: { u, k, m }
+                if (obj.u) {
+                    return { id: obj.u, url: obj.u, type: 'ws', status: 'unknown', addedAt: Date.now() };
+                }
+                // WebTunnel JSON: { url, path }
+                if (obj.url && obj.path) {
+                    const id = obj.url + obj.path;
+                    return { id, url: obj.url, path: obj.path, type: 'webtunnel', status: 'unknown', addedAt: Date.now() };
+                }
+                // Lox credential: { i, c, a }
+                if (obj.i && obj.c && obj.a) {
+                    return { id: 'lox-' + obj.i, url: obj.a, type: 'lox', loxData: obj, status: 'unknown', addedAt: Date.now() };
+                }
+                return null;
+            } catch (e) { /* Not JSON — try URL patterns */ }
+
+            // ws:// or wss:// — WebSocket bridge
+            if (/^wss?:\/\//i.test(trimmed)) {
+                return { id: trimmed, url: trimmed, type: 'ws', status: 'unknown', addedAt: Date.now() };
+            }
+
+            // https:// — meek bridge
+            if (/^https?:\/\//i.test(trimmed)) {
+                return { id: trimmed, url: trimmed, type: 'meek', status: 'unknown', addedAt: Date.now() };
+            }
+
+            return null;
+        }
+
+        // Render bridge list in settings panel
+        async function renderBridgeList() {
+            const bridges = await loadBridgesFromIDB();
+            const list = document.getElementById('bridge-list');
+            const emptyMsg = document.getElementById('bridge-empty-msg');
+
+            // Clear existing items (keep empty msg)
+            list.querySelectorAll('.bridge-item').forEach(el => el.remove());
+
+            if (bridges.length === 0) {
+                emptyMsg.style.display = 'block';
+                return;
+            }
+
+            emptyMsg.style.display = 'none';
+
+            for (const b of bridges) {
+                const item = document.createElement('div');
+                item.className = 'bridge-item';
+                item.dataset.id = b.id;
+
+                const dotClass = b.status === 'ok' ? 'ok' : b.status === 'err' ? 'err' : 'unknown';
+                const displayUrl = b.type === 'webtunnel' ? `${b.url}${b.path}` : b.url;
+                const typeLabel = b.type === 'webtunnel' ? 'WebTunnel' : b.type === 'meek' ? 'meek' : b.type === 'lox' ? 'Lox' : 'WS';
+                const lastTested = b.lastTested ? new Date(b.lastTested).toLocaleTimeString() : '-';
+
+                item.innerHTML = `
+                    <div class="bridge-dot ${dotClass}"></div>
+                    <div class="bridge-info">
+                        <div class="bridge-url">${displayUrl}</div>
+                        <div class="bridge-meta">${typeLabel} &middot; ${lastTested}</div>
+                    </div>
+                    <button class="bridge-delete" data-id="${b.id}">&times;</button>
+                `;
+                list.appendChild(item);
+            }
+
+            // Delete handlers
+            list.querySelectorAll('.bridge-delete').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    const id = e.target.dataset.id;
+                    await deleteBridgeFromIDB(id);
+                    setBridgeStatus(window._i18n.t('bridges.deleted'), 'ok');
+                    renderBridgeList();
+                });
+            });
+        }
+
+        function setBridgeStatus(msg, type) {
+            const el = document.getElementById('bridge-status-msg');
+            el.textContent = msg;
+            el.className = type || '';
+        }
+
+        // Settings panel open/close
+        const settingsPanel = document.getElementById('settings-panel');
+        document.getElementById('btn-settings').addEventListener('click', () => {
+            settingsPanel.classList.add('show');
+            renderBridgeList();
+            // Sync traffic profile selector
+            const sp = document.getElementById('traffic-profile-settings');
+            sp.value = localStorage.getItem('tor-wasm-traffic-profile') || 'none';
+        });
+        document.getElementById('settings-close-btn').addEventListener('click', () => {
+            settingsPanel.classList.remove('show');
+        });
+
+        // Traffic profile in settings
+        document.getElementById('traffic-profile-settings').addEventListener('change', (e) => {
+            localStorage.setItem('tor-wasm-traffic-profile', e.target.value);
+            trafficProfileSelect.value = e.target.value;
+        });
+
+        // Add bridge handler
+        document.getElementById('btn-add-bridge').addEventListener('click', async () => {
+            const input = document.getElementById('bridge-input');
+            const parsed = parseBridgeInput(input.value);
+            if (!parsed) {
+                setBridgeStatus(window._i18n.t('bridges.invalid'), 'err');
+                return;
+            }
+
+            // Check duplicate
+            const existing = await loadBridgesFromIDB();
+            if (existing.some(b => b.id === parsed.id)) {
+                setBridgeStatus(window._i18n.t('bridges.duplicate'), 'err');
+                return;
+            }
+
+            await saveBridgeToIDB(parsed);
+            input.value = '';
+            setBridgeStatus(window._i18n.t('bridges.added'), 'ok');
+            renderBridgeList();
+        });
+
+        // QR scanner (BarcodeDetector API with camera fallback)
+        document.getElementById('btn-scan-qr').addEventListener('click', async () => {
+            if (!('BarcodeDetector' in window)) {
+                setBridgeStatus('QR scanner not supported in this browser', 'err');
+                return;
+            }
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+                const video = document.createElement('video');
+                video.srcObject = stream;
+                video.setAttribute('playsinline', 'true');
+                await video.play();
+
+                const detector = new BarcodeDetector({ formats: ['qr_code'] });
+                const scan = async () => {
+                    try {
+                        const barcodes = await detector.detect(video);
+                        if (barcodes.length > 0) {
+                            stream.getTracks().forEach(t => t.stop());
+                            document.getElementById('bridge-input').value = barcodes[0].rawValue;
+                            setBridgeStatus('QR scanned', 'ok');
+                            return;
+                        }
+                        requestAnimationFrame(scan);
+                    } catch (e) {
+                        stream.getTracks().forEach(t => t.stop());
+                    }
+                };
+                // Auto-stop after 10s
+                setTimeout(() => { stream.getTracks().forEach(t => t.stop()); }, 10000);
+                scan();
+            } catch (e) {
+                setBridgeStatus('Camera access denied', 'err');
+            }
+        });
+
+        // Get effective bridges (IDB custom bridges first, hardcoded fallback)
+        async function getEffectiveBridges() {
+            const custom = await loadBridgesFromIDB();
+            const ws = custom.filter(b => b.type === 'ws').map(b => b.url);
+            const wt = custom.filter(b => b.type === 'webtunnel').map(b => ({ url: b.url, path: b.path }));
+            const meek = custom.filter(b => b.type === 'meek').map(b => b.url);
+            const lox = custom.find(b => b.type === 'lox');
+            return {
+                ws: ws.length > 0 ? ws : BRIDGES,
+                webtunnel: wt.length > 0 ? wt : WEBTUNNEL_BRIDGES,
+                meek: meek.length > 0 ? meek : MEEK_BRIDGES,
+                lox: lox || null,
+            };
+        }
+
+        // Update bridge status after connection attempt
+        async function updateBridgeStatus(url, status) {
+            const bridges = await loadBridgesFromIDB();
+            for (const b of bridges) {
+                const bridgeUrl = b.type === 'webtunnel' ? b.url + b.path : b.url;
+                if (bridgeUrl === url || b.url === url) {
+                    b.status = status;
+                    b.lastTested = Date.now();
+                    await saveBridgeToIDB(b);
+                    break;
+                }
+            }
+        }
+
+        // --- Boot ---
+        boot();
+
+        async function boot() {
+            try {
+                setBootStep('init');
+                await init();
+
+                setBootStep('defense');
+                try { apply_fingerprint_defense(); } catch (e) { /* optional */ }
+
+                setBootStep('bridge');
+                await connectWithFailover();
+
+                setBootStep('circuit');
+                // Clear stale guard state from previous sessions (may reference mock relays)
+                await client.clear_guards();
+                await client.bootstrap();
+
+                // Mark all steps complete and pause briefly so user sees the final state
+                completeAllSteps();
+                await new Promise(r => setTimeout(r, 500));
+
+                // Ready
+                ready = true;
+                loadingOverlay.classList.add('hidden');
+                urlInput.disabled = false;
+                urlInput.focus();
+                setStatus('ok', window._i18n.t('status.ready'));
+                btnReload.disabled = false;
+                showHomepage();
+            } catch (e) {
+                document.getElementById('boot-steps').style.display = 'none';
+                loadingText.textContent = window._i18n.t('error.connectionFailed');
+                setStatus('err', window._i18n.t('status.failed'));
+                console.error('Boot failed:', e);
+            }
+        }
+
+        async function connectWithFailover() {
+            let lastError;
+
+            // Load effective bridges (IDB custom bridges first, hardcoded fallback)
+            const bridges = await getEffectiveBridges();
+
+            // Phase 0: Try Lox-assigned bridge (if credential exists in IndexedDB)
+            const loxBridge = bridges.lox ? bridges.lox.url : await getLoxBridge();
+            if (loxBridge) {
+                try {
+                    client = await withTimeout(new TorClient(loxBridge), BRIDGE_TIMEOUT);
+                    console.log('Connected via Lox-assigned bridge:', loxBridge);
+                    currentTransport = 'lox';
+                    await updateBridgeStatus(loxBridge, 'ok');
+                    return;
+                } catch (e) {
+                    console.warn('Lox bridge failed, reporting blockage...');
+                    await loxReportBlockage(loxBridge);
+                    await updateBridgeStatus(loxBridge, 'err');
+                    lastError = e;
+                }
+            }
+
+            // Phase 1: Try all WebSocket bridges (fast path)
+            for (const bridge of bridges.ws) {
+                try {
+                    client = await withTimeout(new TorClient(bridge), BRIDGE_TIMEOUT);
+                    console.log('Connected via WebSocket to', bridge);
+                    currentTransport = 'websocket';
+                    await updateBridgeStatus(bridge, 'ok');
+                    return;
+                } catch (e) {
+                    lastError = e;
+                    await updateBridgeStatus(bridge, 'err');
+                    console.warn('WebSocket bridge failed:', bridge, e.message || e);
+                }
+            }
+
+            // Phase 1.5: Try WebTunnel bridges (HTTPS disguised as normal website)
+            if (bridges.webtunnel.length > 0) {
+                console.warn('All WebSocket bridges failed, trying WebTunnel...');
+                for (const wt of bridges.webtunnel) {
+                    try {
+                        const wtUrl = wt.url.replace(/\/$/, '') + wt.path;
+                        client = await withTimeout(new TorClient(wtUrl), WEBTUNNEL_TIMEOUT);
+                        console.log('Connected via WebTunnel to', wt.url);
+                        currentTransport = 'webtunnel';
+                        await updateBridgeStatus(wt.url, 'ok');
+                        return;
+                    } catch (e) {
+                        lastError = e;
+                        await updateBridgeStatus(wt.url, 'err');
+                        console.warn('WebTunnel bridge failed:', wt.url, e.message || e);
+                    }
+                }
+            }
+
+            // Phase 2: Try meek bridges (CDN-tunneled HTTP — slower but works when WS/WebTunnel blocked)
+            console.warn('All WebSocket/WebTunnel bridges failed, trying meek transport...');
+            for (const meek of bridges.meek) {
+                try {
+                    client = await withTimeout(new TorClient(meek), MEEK_TIMEOUT);
+                    console.log('Connected via meek to', meek);
+                    currentTransport = 'meek';
+                    await updateBridgeStatus(meek, 'ok');
+                    return;
+                } catch (e) {
+                    lastError = e;
+                    await updateBridgeStatus(meek, 'err');
+                    console.warn('meek bridge failed:', meek, e.message || e);
+                }
+            }
+
+            throw lastError || new Error('All bridges failed (Lox + WebSocket + WebTunnel + meek)');
+        }
+
+        function withTimeout(promise, ms) {
+            return Promise.race([
+                promise,
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), ms))
+            ]);
+        }
+
+        // --- Navigation ---
+
+        urlInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && ready) {
+                e.preventDefault();
+                let input = urlInput.value.trim();
+                if (!input) return;
+
+                let url;
+                if (input.match(/^https?:\/\//i)) {
+                    // Already a full URL
+                    url = input;
+                } else if (input.match(/^[a-z0-9]([a-z0-9-]*\.)+[a-z]{2,}/i) || input.includes('/')) {
+                    // Looks like a domain (has dots + TLD) or path
+                    url = 'http://' + input;
+                } else {
+                    // Search query → DuckDuckGo Lite (no JavaScript needed)
+                    url = 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(input);
+                }
+                navigateTo(url);
+            }
+        });
+
+        // Privacy-friendly alternatives for JS-heavy sites
+        // These render as plain HTML — no JavaScript needed
+        const SITE_REDIRECTS = [
+            { match: /^https?:\/\/(www\.)?youtube\.com\/watch\?v=(.+)/i,
+              replace: 'https://yewtu.be/watch?v=$2', label: 'YouTube → Invidious' },
+            { match: /^https?:\/\/(www\.)?youtube\.com\/?(\?.*)?$/i,
+              replace: 'https://yewtu.be/', label: 'YouTube → Invidious' },
+            { match: /^https?:\/\/(www\.)?youtube\.com\/(.+)/i,
+              replace: 'https://yewtu.be/$2', label: 'YouTube → Invidious' },
+            { match: /^https?:\/\/(www\.)?reddit\.com\/(.+)/i,
+              replace: 'https://old.reddit.com/$2', label: 'Reddit → Old Reddit' },
+            { match: /^https?:\/\/(www\.)?medium\.com\/(.+)/i,
+              replace: 'https://scribe.rip/$2', label: 'Medium → Scribe' },
+            { match: /^https?:\/\/([^.]+)\.medium\.com\/(.+)/i,
+              replace: 'https://scribe.rip/@$1/$2', label: 'Medium → Scribe' },
+        ];
+
+        function tryRedirectUrl(url) {
+            for (const rule of SITE_REDIRECTS) {
+                if (rule.match.test(url)) {
+                    const redirected = url.replace(rule.match, rule.replace);
+                    return { url: redirected, label: rule.label };
+                }
+            }
+            return null;
+        }
+
+        async function navigateTo(url, pushHistory = true) {
+            if (!ready || !client) return;
+            if (fetching) {
+                pendingNav = url;  // Buffer: will fire when current fetch completes
+                return;
+            }
+            fetching = true;
+
+            // Clear SW session cache on new navigation so stale sub-resources don't persist
+            if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+                navigator.serviceWorker.controller.postMessage({ type: 'clear-session-cache' });
+            }
+
+            try {
+                // Auto-redirect JS-heavy sites to HTML-friendly alternatives
+                const redirect = tryRedirectUrl(url);
+                if (redirect) {
+                    console.log(`↪ ${redirect.label}: ${url} → ${redirect.url}`);
+                    url = redirect.url;
+                }
+
+                // Update URL bar
+                currentUrl = url;
+                urlInput.value = url;
+
+                // Push to history
+                if (pushHistory) {
+                    history = history.slice(0, historyIndex + 1);
+                    history.push(url);
+                    historyIndex = history.length - 1;
+                }
+                updateNavButtons();
+
+                // Show loading — reset progress bar to CSS animation mode
+                pageLoadingBar.className = 'active';
+                pageLoadingBar.style.animation = '';
+                pageLoadingBar.style.width = '';
+                pageLoadingBar.style.transition = '';
+                resourceCounter.classList.remove('visible');
+                loadIntoFrame('');
+
+                let lastError;
+                for (let attempt = 0; attempt < 3; attempt++) {
+                    try {
+                        if (attempt > 0) {
+                            setStatus('wait', window._i18n.t('status.retrying'));
+                            client.clear_circuits();
+                            await client.bootstrap();
+                            setStatus('ok', window._i18n.t('status.ready'));
+                        }
+
+                        const raw = await client.fetch_get_cooperative(url);
+                        const { headers, body, status } = parseResponse(raw);
+
+                        if (status >= 300 && status < 400 && headers['location']) {
+                            let redirectUrl = headers['location'];
+                            if (!redirectUrl.match(/^https?:\/\//i)) {
+                                redirectUrl = new URL(redirectUrl, url).toString();
+                            }
+                            urlInput.value = redirectUrl;
+                            currentUrl = redirectUrl;
+                            setStatus('wait', window._i18n.t('status.redirecting'));
+                            pageLoadingBar.className = 'done';
+                            // Release lock before recursive call, then await it
+                            fetching = false;
+                            await navigateTo(redirectUrl, false);
+                            return;
+                        }
+
+                        const contentType = headers['content-type'] || '';
+
+                        if (contentType.includes('text/html') || !contentType || body.trim().startsWith('<')) {
+                            await renderHTML(body, url);
+                        } else {
+                            renderPlainText(body);
+                        }
+
+                        // Don't mark bar as "done" immediately — sub-resource
+                        // loading continues in background. The SW progress
+                        // handler will mark it done when resources finish.
+                        // But set a fallback timeout in case there are no sub-resources.
+                        pageLoadingBar.style.animation = 'none';
+                        pageLoadingBar.style.width = '40%';
+                        pageLoadingBar.style.transition = 'width 0.3s';
+                        setTimeout(() => {
+                            if (pageLoadingBar.className !== 'done') {
+                                pageLoadingBar.className = 'done';
+                            }
+                        }, 8000);
+                        return;
+                    } catch (e) {
+                        lastError = e;
+                        console.warn(`Attempt ${attempt + 1} failed:`, e.message || e);
+                    }
+                }
+
+                pageLoadingBar.className = 'done';
+                renderError(window._i18n.t('error.pageFailed'), window._i18n.t('error.pageFailedDetail'));
+                console.error('All attempts failed:', lastError);
+            } finally {
+                fetching = false;
+                // Process any navigation that was buffered while we were busy
+                if (pendingNav) {
+                    const buffered = pendingNav;
+                    pendingNav = null;
+                    setTimeout(() => navigateTo(buffered), 0);
+                }
+            }
+        }
+
+        // --- Rendering ---
+
+        function parseResponse(raw) {
+            // Try \r\n\r\n first, fall back to \n\n
+            let sep = raw.indexOf('\r\n\r\n');
+            let lineEnd = '\r\n';
+            if (sep === -1) {
+                sep = raw.indexOf('\n\n');
+                lineEnd = '\n';
+            }
+            if (sep === -1) return { headers: {}, body: raw, status: 200 };
+
+            const headerBlock = raw.substring(0, sep);
+            let body = raw.substring(sep + (lineEnd === '\r\n' ? 4 : 2));
+
+            const statusMatch = headerBlock.match(/HTTP\/[\d.]+ (\d+)/);
+            const status = statusMatch ? parseInt(statusMatch[1]) : 200;
+
+            const headers = {};
+            headerBlock.split(lineEnd).slice(1).forEach(line => {
+                const colon = line.indexOf(':');
+                if (colon > 0) {
+                    headers[line.substring(0, colon).toLowerCase().trim()] =
+                        line.substring(colon + 1).trim();
+                }
+            });
+
+            // Decode chunked transfer encoding
+            if ((headers['transfer-encoding'] || '').toLowerCase().includes('chunked')) {
+                body = decodeChunked(body, lineEnd);
+            }
+
+            return { headers, body, status };
+        }
+
+        function decodeChunked(raw, lineEnd) {
+            let result = '';
+            let pos = 0;
+            while (pos < raw.length) {
+                const eol = raw.indexOf(lineEnd, pos);
+                if (eol === -1) { result += raw.substring(pos); break; }
+                const sizeLine = raw.substring(pos, eol).trim();
+                const chunkSize = parseInt(sizeLine, 16);
+                if (isNaN(chunkSize) || chunkSize === 0) break;
+                const dataStart = eol + lineEnd.length;
+                result += raw.substring(dataStart, dataStart + chunkSize);
+                pos = dataStart + chunkSize + lineEnd.length;
+            }
+            return result;
+        }
+
+        // Load HTML into the iframe via blob URL.
+        // blob: URLs are same-origin, so the SW intercepts all sub-resource
+        // fetches from the iframe. srcdoc creates about:srcdoc which the SW
+        // CANNOT intercept — that was the root cause of CORS failures.
+        function loadIntoFrame(html) {
+            // Revoke previous blob URL to avoid memory leaks
+            if (currentBlobUrl) {
+                URL.revokeObjectURL(currentBlobUrl);
+                currentBlobUrl = null;
+            }
+            const blob = new Blob([html], { type: 'text/html' });
+            currentBlobUrl = URL.createObjectURL(blob);
+            pageFrame.src = currentBlobUrl;
+        }
+
+        async function renderHTML(html, baseUrl) {
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+
+            // Set base URL for relative links
+            let base = doc.querySelector('base');
+            if (!base) {
+                base = doc.createElement('base');
+                doc.head.prepend(base);
+            }
+            base.href = baseUrl;
+
+            // Remove resource hints (saves bandwidth — SW handles real requests)
+            doc.querySelectorAll('link[rel="preload"], link[rel="prefetch"], link[rel="preconnect"], link[rel="dns-prefetch"], link[rel="modulepreload"]').forEach(l => l.remove());
+
+            // Remove meta refresh redirects
+            doc.querySelectorAll('meta[http-equiv="refresh"]').forEach(m => m.remove());
+
+            // Remove CSP meta tags — we handle security at the proxy level
+            doc.querySelectorAll('meta[http-equiv]').forEach(m => {
+                const equiv = (m.getAttribute('http-equiv') || '').toLowerCase();
+                if (equiv === 'content-security-policy' || equiv === 'content-security-policy-report-only') {
+                    m.remove();
+                }
+            });
+
+            // Strip crossorigin, integrity, and nonce attributes from ALL elements.
+            // crossorigin triggers CORS checks which fail because the iframe origin
+            // (localhost) doesn't match the resource origin — even though the SW
+            // proxies everything through Tor. Removing it makes resources load as
+            // "no-cors" (opaque) which bypasses CORS entirely.
+            // integrity (SRI) must also go since Tor-proxied responses may differ.
+            // nonce (CSP) must go since we strip CSP headers.
+            doc.querySelectorAll('[crossorigin]').forEach(el => el.removeAttribute('crossorigin'));
+            doc.querySelectorAll('[integrity]').forEach(el => el.removeAttribute('integrity'));
+            doc.querySelectorAll('[nonce]').forEach(el => el.removeAttribute('nonce'));
+
+            // Convert module scripts to classic scripts where possible.
+            // type="module" always enforces CORS (can't be disabled with attributes).
+            // Classic scripts load as "no-cors" and work through our SW proxy.
+            doc.querySelectorAll('script[type="module"]').forEach(el => {
+                el.removeAttribute('type');
+            });
+
+            // Remove known tracker/analytics scripts at the DOM level.
+            // The SW also blocks these domains, but removing them from HTML is faster
+            // (browser never even attempts the fetch) and eliminates console errors.
+            const trackerSrcPatterns = [
+                'google-analytics.com', 'googletagmanager.com', 'googlesyndication.com',
+                'doubleclick.net', 'facebook.net', 'connect.facebook.net',
+                'onesignal.com', 'permutive.com', 'parsely.com',
+                'chartbeat.com', 'scorecardresearch.com', 'taboola.com',
+                'outbrain.com', 'btloader.com', 'pub.network', 'viafoura.co',
+                'hotjar.com', 'clarity.ms', 'newrelic.com', 'nr-data.net',
+                'fullstory.com', 'segment.com', 'amplitude.com', 'mixpanel.com',
+            ];
+            doc.querySelectorAll('script[src]').forEach(script => {
+                const src = script.src.toLowerCase();
+                if (trackerSrcPatterns.some(p => src.includes(p))) {
+                    script.remove();
+                }
+            });
+
+            // Inject frame-busting prevention FIRST (before any site scripts run)
+            // Some sites try to navigate the iframe to their URL; we intercept this
+            // and route through our navigation system instead
+            const antibust = doc.createElement('script');
+            antibust.textContent = `
+                // Intercept location changes and route through parent nav
+                (function() {
+                    // Block top-level navigation attempts (frame busting)
+                    try {
+                        if (window.top !== window.self) {
+                            Object.defineProperty(window, '__locationLocked', { value: true });
+                        }
+                    } catch(e) {}
+                })();
+            `;
+            if (doc.head.firstChild) {
+                doc.head.insertBefore(antibust, doc.head.firstChild);
+            } else {
+                doc.head.appendChild(antibust);
+            }
+
+            // Inject navigation interceptor — catches ALL link clicks (static + dynamic)
+            // and form submissions, routing them through our app's navigation
+            const script = doc.createElement('script');
+            script.textContent = `
+                document.addEventListener('click', function(e) {
+                    var a = e.target.closest('a');
+                    if (a) {
+                        var url = a.href;
+                        if (url && url !== '#' && url.indexOf('javascript:') !== 0 && url.indexOf('mailto:') !== 0) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            parent.postMessage({ type: 'nav', url: url }, '*');
+                        }
+                    }
+                });
+                document.addEventListener('submit', function(e) {
+                    e.preventDefault();
+                    var form = e.target;
+                    var action = form.action || '';
+                    var method = (form.method || 'GET').toUpperCase();
+                    var params = new URLSearchParams(new FormData(form)).toString();
+                    var sep = action.indexOf('?') >= 0 ? '&' : '?';
+                    var url = params ? action + sep + params : action;
+                    parent.postMessage({ type: 'nav', url: url }, '*');
+                });
+            `;
+            doc.body.appendChild(script);
+
+            // Render via blob URL — SW intercepts all sub-resource fetches
+            loadIntoFrame(doc.documentElement.outerHTML);
+        }
+
+        function renderPlainText(text) {
+            const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            loadIntoFrame(`<!DOCTYPE html>
+<html><head><style>
+body { font-family: monospace; white-space: pre-wrap; word-break: break-all;
+       padding: 20px; margin: 0; background: #fafafa; color: #333; font-size: 14px; line-height: 1.5; }
+</style></head><body>${escaped}</body></html>`);
+        }
+
+        function showHomepage() {
+            loadIntoFrame(`<!DOCTYPE html>
+<html><head><style>
+body { font-family: -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #e2e8f0;
+       margin: 0; padding: 40px 20px; }
+.wrap { max-width: 500px; margin: 0 auto; }
+h1 { font-size: 20px; font-weight: 500; margin-bottom: 4px; text-align: center; }
+.sub { color: #718096; font-size: 13px; text-align: center; margin-bottom: 30px; }
+.search { width: 100%; padding: 14px 18px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1);
+          background: #16213e; color: #e2e8f0; font-size: 16px; outline: none; box-sizing: border-box; }
+.search:focus { border-color: #6366f1; }
+.search::placeholder { color: #718096; }
+h2 { font-size: 13px; color: #718096; text-transform: uppercase; letter-spacing: 1px;
+     margin: 28px 0 12px; }
+.sites { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.site { display: block; padding: 12px 14px; background: #16213e; border-radius: 8px;
+        color: #e2e8f0; text-decoration: none; font-size: 14px; cursor: pointer;
+        border: 1px solid rgba(255,255,255,0.05); }
+.site:hover { background: #1c2b4a; }
+.site small { display: block; color: #718096; font-size: 11px; margin-top: 2px; }
+.tip { color: #718096; font-size: 12px; text-align: center; margin-top: 30px; line-height: 1.6; }
+</style></head><body>
+<div class="wrap">
+<h1>Private Browser</h1>
+<p class="sub">Your traffic is routed through 3 encrypted relays</p>
+<input class="search" type="text" placeholder="Search or enter a web address" autofocus>
+<h2>Suggested Sites</h2>
+<div class="sites">
+<a class="site" data-href="https://www.bbc.com">BBC News<small>bbc.com</small></a>
+<a class="site" data-href="https://en.wikipedia.org">Wikipedia<small>wikipedia.org</small></a>
+<a class="site" data-href="https://www.dw.com">DW News<small>dw.com</small></a>
+<a class="site" data-href="https://www.reuters.com">Reuters<small>reuters.com</small></a>
+<a class="site" data-href="https://www.bbc.com/persian">BBC Persian<small>bbc.com/persian</small></a>
+<a class="site" data-href="https://www.bbc.com/russian">BBC Russian<small>bbc.com/russian</small></a>
+<a class="site" data-href="https://apnews.com">AP News<small>apnews.com</small></a>
+<a class="site" data-href="https://www.npr.org">NPR<small>npr.org</small></a>
+</div>
+<p class="tip">Type anything to search privately via DuckDuckGo<br>
+All connections go through Tor &mdash; your ISP sees nothing</p>
+</div>
+<script>
+document.querySelector('.search').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+        var q = this.value.trim();
+        if (!q) return;
+        if (q.match(/^https?:\\/\\//i) || (q.match(/^[a-z0-9]([a-z0-9-]*\\.)+[a-z]{2,}/i))) {
+            var url = q.match(/^https?:\\/\\//i) ? q : 'http://' + q;
+            parent.postMessage({ type: 'nav', url: url }, '*');
+        } else {
+            parent.postMessage({ type: 'nav', url: 'https://html.duckduckgo.com/html/?q=' + encodeURIComponent(q) }, '*');
+        }
+    }
+});
+document.addEventListener('click', function(e) {
+    var a = e.target.closest('[data-href]');
+    if (a) { e.preventDefault(); parent.postMessage({ type: 'nav', url: a.dataset.href }, '*'); }
+});
+<\x2fscript>
+</body></html>`);
+        }
+
+        function renderError(title, detail) {
+            loadIntoFrame(`<!DOCTYPE html>
+<html><head><style>
+body { display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0;
+       font-family: -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #e2e8f0;
+       flex-direction: column; gap: 12px; text-align: center; padding: 40px; }
+h2 { font-size: 18px; font-weight: 500; }
+p { color: #718096; font-size: 14px; max-width: 400px; line-height: 1.5; }
+</style></head><body>
+<h2>${title}</h2>
+<p>${detail}</p>
+</body></html>`);
+        }
+
+        // --- Message handling from iframe ---
+        window.addEventListener('message', (e) => {
+            if (e.data && e.data.type === 'nav' && e.data.url) {
+                navigateTo(e.data.url);
+            }
+        });
+
+        // --- Track iframe self-navigation (e.g., site JS redirects the frame) ---
+        pageFrame.addEventListener('load', () => {
+            try {
+                const frameUrl = pageFrame.contentWindow.location.href;
+                // Skip our blob: URLs and about: pages — only track real navigations
+                if (frameUrl && !frameUrl.startsWith('blob:') && !frameUrl.startsWith('about:')) {
+                    urlInput.value = frameUrl;
+                    currentUrl = frameUrl;
+                }
+            } catch (e) {
+                // Cross-origin access blocked
+            }
+        });
+
+        // --- Back / Forward ---
+        btnBack.addEventListener('click', () => {
+            if (fetching || historyIndex <= 0) return;
+            historyIndex--;
+            navigateTo(history[historyIndex], false);
+            updateNavButtons();
+        });
+
+        btnForward.addEventListener('click', () => {
+            if (fetching || historyIndex >= history.length - 1) return;
+            historyIndex++;
+            navigateTo(history[historyIndex], false);
+            updateNavButtons();
+        });
+
+        btnReload.addEventListener('click', () => {
+            if (currentUrl && !fetching) navigateTo(currentUrl, false);
+        });
+
+        function updateNavButtons() {
+            btnBack.disabled = historyIndex <= 0;
+            btnForward.disabled = historyIndex >= history.length - 1;
+        }
+
+        // --- Status ---
+        function setLoading(text) {
+            loadingText.textContent = text;
+        }
+
+        function setBootStep(stepName) {
+            const steps = document.querySelectorAll('.boot-step');
+            let found = false;
+            for (const step of steps) {
+                if (step.dataset.step === stepName) {
+                    step.className = 'boot-step active';
+                    found = true;
+                } else if (!found) {
+                    step.className = 'boot-step done';
+                }
+            }
+        }
+
+        function completeAllSteps() {
+            document.querySelectorAll('.boot-step').forEach(s => {
+                s.className = 'boot-step done';
+            });
+        }
+
+        function setStatus(state, text) {
+            dot.className = 'dot' + (state === 'ok' ? ' ok' : state === 'wait' ? ' wait' : '');
+            statusLabel.textContent = text;
+        }
+
+        // --- Identity panel ---
+        document.getElementById('status').addEventListener('click', () => {
+            if (!ready || fetching) return;
+            identityPanel.classList.toggle('show');
+            try {
+                const s = client.get_status();
+                const relays = s.consensus_relay_count || '?';
+                const circuits = s.cached_circuits || 0;
+                identityInfo.textContent = `Routed through 3 relays \u00B7 ${circuits} circuit${circuits !== 1 ? 's' : ''} \u00B7 ${relays} relays available`;
+            } catch (e) {
+                identityInfo.textContent = 'Routed through 3 relays';
+            }
+        });
+
+        newIdentityBtn.addEventListener('click', async () => {
+            if (fetching) return;  // Don't change identity while fetching
+            identityPanel.classList.remove('show');
+            fetching = true;
+            setStatus('wait', window._i18n.t('status.newIdentity'));
+            try {
+                client.clear_circuits();
+                await client.bootstrap();
+                setStatus('ok', window._i18n.t('status.ready'));
+                fetching = false;
+                if (currentUrl) navigateTo(currentUrl, false);
+            } catch (e) {
+                fetching = false;
+                setStatus('err', window._i18n.t('status.identityFailed'));
+                console.error('New identity failed:', e);
+            }
+        });
+
+        // Close panel on outside click
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('#status') && !e.target.closest('#identity-panel')) {
+                identityPanel.classList.remove('show');
+            }
+        });
+
+        // --- Circuit Persistence (Tab Backgrounding) ---
+        //
+        // When the user backgrounds the tab (switches apps, locks phone):
+        // - iOS Safari kills JS execution after ~30s
+        // - Android Chrome throttles timers to 1/min after 5min
+        // - Desktop browsers throttle to 1/min after ~5min
+        //
+        // Strategy:
+        // 1. On hide: Start keepalive timer (sends padding cells to keep circuit alive)
+        // 2. On show: Check circuit health. If stale (>60s hidden), rebuild.
+        //    If fresh, resume normally.
+        //
+        // This prevents users from losing their circuit when they briefly
+        // check another app — critical in high-pressure scenarios (protests,
+        // internet shutdowns) where reconnecting takes precious seconds.
+        document.addEventListener('visibilitychange', async () => {
+            if (!ready || !client) return;
+
+            if (document.hidden) {
+                // Tab is now hidden — start keepalive
+                lastVisibleTime = Date.now();
+                console.log('[persistence] Tab hidden, starting keepalive');
+
+                // Send keepalive every 25s (before iOS kills at ~30s)
+                keepaliveTimer = setInterval(() => {
+                    if (!client || fetching) return;
+                    try {
+                        // get_status() is a lightweight call that exercises the WASM
+                        // without a network round-trip. Keeps the JS context alive.
+                        client.get_status();
+                    } catch (e) {
+                        // Circuit may have died — will rebuild on show
+                    }
+                }, 25000);
+            } else {
+                // Tab is now visible again
+                if (keepaliveTimer) {
+                    clearInterval(keepaliveTimer);
+                    keepaliveTimer = null;
+                }
+
+                const hiddenDuration = Date.now() - lastVisibleTime;
+                console.log(`[persistence] Tab visible after ${Math.round(hiddenDuration / 1000)}s`);
+
+                if (hiddenDuration > 60000) {
+                    // Hidden for >60s — circuit likely stale, rebuild
+                    console.log('[persistence] Circuit stale, rebuilding...');
+                    if (!fetching) {
+                        fetching = true;
+                        setStatus('wait', window._i18n.t('status.retrying'));
+                        try {
+                            client.clear_circuits();
+                            await client.bootstrap();
+                            setStatus('ok', window._i18n.t('status.ready'));
+                        } catch (e) {
+                            console.error('[persistence] Rebuild failed:', e);
+                            setStatus('err', window._i18n.t('status.failed'));
+                        } finally {
+                            fetching = false;
+                        }
+                    }
+                } else {
+                    // Short absence — circuit probably still alive
+                    console.log('[persistence] Circuit likely still alive');
+                }
+            }
+        });
+
+        // --- Service Worker + Tor Proxy Bridge ---
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js').then(reg => {
+                // Register as coordinator once SW is active
+                const sw = reg.active || reg.installing || reg.waiting;
+                if (sw) {
+                    sw.postMessage({ type: 'register-coordinator' });
+                }
+                reg.addEventListener('updatefound', () => {
+                    const newSw = reg.installing;
+                    newSw.addEventListener('statechange', () => {
+                        if (newSw.state === 'activated') {
+                            newSw.postMessage({ type: 'register-coordinator' });
+                        }
+                    });
+                });
+                // Also register when controller changes
+                navigator.serviceWorker.addEventListener('controllerchange', () => {
+                    if (navigator.serviceWorker.controller) {
+                        navigator.serviceWorker.controller.postMessage({ type: 'register-coordinator' });
+                    }
+                });
+            }).catch(() => {});
+
+            // --- Tor Proxy Bridge ---
+            // SW sends fetch requests here; we route through TorClient and respond
+            let swFetchQueue = [];
+            let swProcessing = false;
+            let subResourceDoneTimer = null;
+
+            navigator.serviceWorker.addEventListener('message', (e) => {
+                if (e.data.type === 'tor-fetch') {
+                    // Insert into queue by priority (lower = higher priority)
+                    // CSS (0) > JS (1) > Fonts (2) > Other (3) > Images (4)
+                    const item = e.data;
+                    const priority = item.priority || 3;
+                    let inserted = false;
+                    for (let i = 0; i < swFetchQueue.length; i++) {
+                        if ((swFetchQueue[i].priority || 3) > priority) {
+                            swFetchQueue.splice(i, 0, item);
+                            inserted = true;
+                            break;
+                        }
+                    }
+                    if (!inserted) swFetchQueue.push(item);
+                    processSwQueue();
+                }
+
+                if (e.data.type === 'resource-progress') {
+                    const { pending, completed, blocked } = e.data;
+                    if (pending > 0) {
+                        const total = pending + completed;
+                        const pct = total > 0 ? completed / total : 0;
+                        // Show resource counter overlay
+                        resourceCounter.textContent = `${completed}/${total} resources`;
+                        resourceCounter.classList.add('visible');
+                        // Update status bar
+                        setStatus('wait', `Loading ${completed}/${total}`);
+                        // Smoothly progress bar from 40% (HTML done) to 95%
+                        if (pageLoadingBar.style.animation === 'none') {
+                            pageLoadingBar.style.width = Math.min(40 + pct * 55, 95) + '%';
+                        }
+                    } else if (pending === 0 && completed > 0) {
+                        // All sub-resources loaded — small delay to catch late-arriving requests
+                        clearTimeout(subResourceDoneTimer);
+                        subResourceDoneTimer = setTimeout(() => {
+                            pageLoadingBar.className = 'done';
+                            resourceCounter.classList.remove('visible');
+                            const summary = blocked
+                                ? `${completed} loaded, ${blocked} trackers blocked`
+                                : `${completed} resources loaded`;
+                            setStatus('ok', summary);
+                            // Reset to plain "Ready" after 4s
+                            setTimeout(() => {
+                                if (!fetching) setStatus('ok', window._i18n.t('status.ready'));
+                            }, 4000);
+                        }, 500);
+                    }
+                }
+            });
+
+            async function processSwQueue() {
+                if (swProcessing || !ready || !client) return;
+                swProcessing = true;
+
+                while (swFetchQueue.length > 0) {
+                    const { id, url, binary } = swFetchQueue.shift();
+
+                    // Wait if main navigateTo is using the client
+                    while (fetching) {
+                        await new Promise(r => setTimeout(r, 50));
+                    }
+                    fetching = true;
+
+                    try {
+                        let body, status = 200, headers = {};
+
+                        if (binary) {
+                            const bytes = await client.fetch_get_cooperative_bytes(url);
+                            // bytes is Uint8Array of raw HTTP response
+                            const parsed = parseBinaryResponse(bytes);
+                            body = parsed.bodyBuffer;
+                            status = parsed.status;
+                            headers = parsed.headers;
+                            headers['content-type'] = headers['content-type'] || guessMime(url);
+
+                            navigator.serviceWorker.controller.postMessage({
+                                type: 'tor-response', id, body, status, headers, binary: true
+                            }, [body]); // Transfer ArrayBuffer
+                        } else {
+                            const raw = await client.fetch_get_cooperative(url);
+                            const parsed = parseResponse(raw);
+
+                            // Handle redirects: return redirect response so browser follows
+                            if (parsed.status >= 300 && parsed.status < 400 && parsed.headers['location']) {
+                                headers = { 'location': parsed.headers['location'] };
+                                status = parsed.status;
+                                body = '';
+                            } else {
+                                body = parsed.body;
+                                status = parsed.status;
+                                headers = parsed.headers;
+                            }
+
+                            navigator.serviceWorker.controller.postMessage({
+                                type: 'tor-response', id, body, status, headers, binary: false
+                            });
+                        }
+                    } catch (err) {
+                        console.warn('[Bridge] Fetch failed:', url, err.message || err);
+                        navigator.serviceWorker.controller.postMessage({
+                            type: 'tor-response', id, error: err.message || 'Fetch failed'
+                        });
+                    } finally {
+                        fetching = false;
+                    }
+                }
+
+                swProcessing = false;
+            }
+
+            function parseBinaryResponse(bytes) {
+                // Find \r\n\r\n separator in binary data
+                let sepIdx = -1;
+                for (let i = 0; i < bytes.length - 3; i++) {
+                    if (bytes[i] === 13 && bytes[i+1] === 10 && bytes[i+2] === 13 && bytes[i+3] === 10) {
+                        sepIdx = i;
+                        break;
+                    }
+                }
+                if (sepIdx === -1) {
+                    return { status: 200, headers: {}, bodyBuffer: bytes.buffer };
+                }
+
+                const headerBytes = bytes.slice(0, sepIdx);
+                const headerText = new TextDecoder().decode(headerBytes);
+                const bodyBytes = bytes.slice(sepIdx + 4);
+
+                const lines = headerText.split('\r\n');
+                const statusMatch = lines[0].match(/HTTP\/[\d.]+ (\d+)/);
+                const status = statusMatch ? parseInt(statusMatch[1]) : 200;
+
+                const headers = {};
+                for (let i = 1; i < lines.length; i++) {
+                    const colon = lines[i].indexOf(':');
+                    if (colon > 0) {
+                        headers[lines[i].substring(0, colon).toLowerCase().trim()] =
+                            lines[i].substring(colon + 1).trim();
+                    }
+                }
+
+                return { status, headers, bodyBuffer: bodyBytes.buffer };
+            }
+
+            function guessMime(url) {
+                const ext = url.split('.').pop().split('?')[0].toLowerCase();
+                const map = {
+                    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+                    gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
+                    ico: 'image/x-icon', css: 'text/css', js: 'application/javascript',
+                    json: 'application/json', woff: 'font/woff', woff2: 'font/woff2',
+                    ttf: 'font/ttf', otf: 'font/otf', pdf: 'application/pdf',
+                };
+                return map[ext] || 'application/octet-stream';
+            }
+        }
+    </script>
+</body>
+</html>

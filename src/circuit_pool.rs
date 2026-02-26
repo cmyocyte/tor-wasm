@@ -8,8 +8,6 @@
 //! - No destination-specific prebuilding (reveals intent)
 
 use std::collections::VecDeque;
-use std::rc::Rc;
-use std::cell::RefCell;
 
 use crate::protocol::{Circuit, CircuitBuilder, RelaySelector};
 use crate::error::{TorError, Result};
@@ -56,8 +54,8 @@ impl Default for CircuitPoolConfig {
 
 /// A prebuilt circuit ready for use
 struct PrebuiltCircuit {
-    /// The circuit itself
-    circuit: Rc<RefCell<Circuit>>,
+    /// The circuit itself (owned)
+    circuit: Circuit,
     /// When it was created
     created_at: u64,
 }
@@ -65,7 +63,7 @@ struct PrebuiltCircuit {
 impl PrebuiltCircuit {
     fn new(circuit: Circuit) -> Self {
         Self {
-            circuit: Rc::new(RefCell::new(circuit)),
+            circuit,
             created_at: now_ms(),
         }
     }
@@ -123,58 +121,60 @@ impl PrebuiltCircuitPool {
     }
 
     /// Get a circuit from the pool, or build a new one
-    /// 
+    ///
     /// This is the main entry point - returns a ready-to-use circuit.
     pub async fn get_circuit(
         &mut self,
         builder: &CircuitBuilder,
         selector: &RelaySelector,
-    ) -> Result<Rc<RefCell<Circuit>>> {
+    ) -> Result<Circuit> {
         // Run maintenance if needed
         self.maybe_expire_old_circuits();
 
-        // Try to get from pool
-        if let Some(prebuilt) = self.available.pop_front() {
-            log::info!("♻️ Using prebuilt circuit (age: {}ms)", prebuilt.age_ms());
-            self.stats.pool_hits += 1;
-            self.stats.current_pool_size = self.available.len();
-            return Ok(prebuilt.circuit);
+        // Try to get from pool (check health before handing out)
+        while let Some(prebuilt) = self.available.pop_front() {
+            if prebuilt.circuit.is_connected() {
+                log::info!("Using prebuilt circuit (age: {}ms, pool remaining: {})",
+                    prebuilt.age_ms(), self.available.len());
+                self.stats.pool_hits += 1;
+                self.stats.current_pool_size = self.available.len();
+                return Ok(prebuilt.circuit);
+            }
+            log::debug!("Skipping disconnected circuit in pool");
         }
 
         // Build new circuit
-        log::info!("🔨 Building new circuit (pool empty)");
+        log::info!("Building new circuit (pool empty)");
         self.stats.pool_misses += 1;
-        
+
         let circuit = builder.build_circuit(selector).await?;
         self.stats.circuits_built += 1;
-        
-        Ok(Rc::new(RefCell::new(circuit)))
+
+        Ok(circuit)
     }
 
     /// Return a circuit to the pool for reuse
-    /// 
+    ///
     /// Circuit will be kept if pool has room and circuit is healthy.
-    pub fn return_circuit(&mut self, circuit: Rc<RefCell<Circuit>>) {
+    pub fn return_circuit(&mut self, circuit: Circuit) {
         // Don't return if pool is full
         if self.available.len() >= self.config.max_prebuilt {
             log::debug!("Pool full, dropping circuit");
             return;
         }
 
-        // Check if circuit is still usable
-        // (In a real implementation, we'd check if it's still connected)
-        
-        // Wrap in PrebuiltCircuit with current timestamp
-        // Note: This resets the age, which is intentional - 
-        // a recently-used circuit is still fresh
-        let prebuilt = PrebuiltCircuit {
+        // Check if circuit is still connected
+        if !circuit.is_connected() {
+            log::debug!("Circuit disconnected, not returning to pool");
+            return;
+        }
+
+        self.available.push_back(PrebuiltCircuit {
             circuit,
             created_at: now_ms(),
-        };
-        
-        self.available.push_back(prebuilt);
+        });
         self.stats.current_pool_size = self.available.len();
-        log::debug!("Circuit returned to pool (size: {})", self.available.len());
+        log::info!("Circuit returned to pool (size: {})", self.available.len());
     }
 
     /// Prebuild circuits up to the minimum

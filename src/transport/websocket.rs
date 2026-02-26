@@ -27,25 +27,45 @@ enum ConnectionState {
 struct StreamState {
     /// Current connection state
     state: ConnectionState,
-    
+
     /// Buffer for received data
     recv_buffer: VecDeque<u8>,
-    
+
     /// Buffer for data to send
     send_buffer: VecDeque<u8>,
-    
+
     /// Waker for read operations
     read_waker: Option<Waker>,
-    
+
     /// Waker for write operations
     write_waker: Option<Waker>,
-    
+
     /// Last error encountered
     error: Option<String>,
+
+    /// Traffic shaping profile for DPI resistance.
+    /// When set to a non-None profile, outgoing data is fragmented into
+    /// profile-matching frame sizes instead of the default 514-byte Tor cells.
+    traffic_profile: crate::traffic_shaping::TrafficProfile,
+
+    /// RNG state for traffic shaping (deterministic xorshift64)
+    shaping_rng: u64,
+
+    /// Pending shaped frames waiting to be sent with timing delays.
+    /// The first frame is sent immediately; subsequent frames are queued
+    /// here and sent via setTimeout callbacks to match the profile's
+    /// inter-frame timing distribution.
+    pending_shaped_frames: VecDeque<Vec<u8>>,
 }
 
 impl StreamState {
     fn new() -> Self {
+        // Seed RNG from current time
+        let seed = web_time::SystemTime::now()
+            .duration_since(web_time::SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(42);
+
         Self {
             state: ConnectionState::Connecting,
             recv_buffer: VecDeque::new(),
@@ -53,6 +73,9 @@ impl StreamState {
             read_waker: None,
             write_waker: None,
             error: None,
+            traffic_profile: crate::traffic_shaping::TrafficProfile::None,
+            shaping_rng: seed,
+            pending_shaped_frames: VecDeque::new(),
         }
     }
 }
@@ -259,15 +282,39 @@ impl WasmTcpStream {
         Ok(())
     }
     
-    /// Flush the send buffer to the WebSocket
+    /// Set the traffic shaping profile for DPI resistance.
+    ///
+    /// When a non-None profile is active, outgoing data is fragmented into
+    /// frame sizes matching the profile's distribution (e.g., Chat: 50-200 bytes).
+    /// This prevents DPI from fingerprinting traffic by the characteristic
+    /// 514-byte Tor cell size.
+    ///
+    /// Profiles:
+    ///   - `None`: raw Tor cells (no shaping, fastest)
+    ///   - `Chat`: bursty small messages (50-200 bytes) with idle gaps
+    ///   - `Ticker`: steady small frames (20-100 bytes)
+    ///   - `Video`: sustained high-bandwidth (800-1200 bytes)
+    pub fn set_traffic_profile(&self, profile: crate::traffic_shaping::TrafficProfile) {
+        unsafe {
+            let state = &mut *self.state.get();
+            log::info!("Traffic shaping profile set to: {:?}", profile);
+            state.traffic_profile = profile;
+        }
+    }
+
+    /// Flush the send buffer to the WebSocket.
+    ///
+    /// When traffic shaping is active, data is fragmented into profile-matching
+    /// frame sizes. The first frame is sent immediately; remaining frames are
+    /// queued and sent via setTimeout callbacks to match timing distribution.
     fn flush_send_buffer(&self) -> IoResult<()> {
         unsafe {
             let state = &mut *self.state.get();
-            
+
             if state.send_buffer.is_empty() {
                 return Ok(());
             }
-            
+
             // Check if we can send
             match state.state {
                 ConnectionState::Connected => {},
@@ -284,21 +331,97 @@ impl WasmTcpStream {
                     ));
                 }
             }
-            
-            // Send all buffered data
+
+            // Drain all buffered data
             let data: Vec<u8> = state.send_buffer.drain(..).collect();
-            
-            if !data.is_empty() {
-                log::debug!("Sending {} bytes over WebSocket", data.len());
-                
-                let array = js_sys::Uint8Array::from(&data[..]);
-                self.ws.send_with_array_buffer(&array.buffer()).map_err(|e| {
-                    log::error!("Failed to send data: {:?}", e);
-                    io::Error::new(io::ErrorKind::Other, "Failed to send data over WebSocket")
-                })?;
+
+            if data.is_empty() {
+                return Ok(());
             }
-            
+
+            // Fragment data according to traffic profile
+            let frames = crate::traffic_shaping::fragment_for_profile(
+                &data,
+                &state.traffic_profile,
+                &mut state.shaping_rng,
+            );
+
+            if frames.is_empty() {
+                return Ok(());
+            }
+
+            // Send first frame immediately
+            let first = &frames[0];
+            log::debug!(
+                "Sending {} bytes ({} frames, profile {:?})",
+                data.len(),
+                frames.len(),
+                state.traffic_profile
+            );
+
+            let array = js_sys::Uint8Array::from(&first[..]);
+            self.ws.send_with_array_buffer(&array.buffer()).map_err(|e| {
+                log::error!("Failed to send data: {:?}", e);
+                io::Error::new(io::ErrorKind::Other, "Failed to send data over WebSocket")
+            })?;
+
+            // If there are more frames, schedule them with timing delays
+            if frames.len() > 1 {
+                let remaining: Vec<Vec<u8>> = frames[1..].to_vec();
+                self.schedule_deferred_frames(remaining, &mut state.shaping_rng);
+            }
+
             Ok(())
+        }
+    }
+
+    /// Schedule remaining shaped frames with profile-matching timing delays.
+    ///
+    /// Uses `setTimeout` to send each frame after the appropriate delay,
+    /// simulating the inter-frame timing of the active traffic profile.
+    fn schedule_deferred_frames(&self, frames: Vec<Vec<u8>>, rng: &mut u64) {
+        use crate::traffic_shaping::{profile_delay, TrafficProfile};
+
+        let ws = self.ws.clone();
+        let state = self.state.clone();
+        let profile = unsafe { (*self.state.get()).traffic_profile };
+
+        // Calculate cumulative delays for each frame
+        let mut cumulative_ms: u32 = 0;
+        let mut scheduled_frames: Vec<(u32, Vec<u8>)> = Vec::with_capacity(frames.len());
+
+        for frame in frames {
+            let delay = profile_delay(&profile, rng);
+            cumulative_ms += delay.as_millis() as u32;
+            scheduled_frames.push((cumulative_ms, frame));
+        }
+
+        // Schedule each frame via setTimeout
+        for (delay_ms, frame) in scheduled_frames {
+            let ws_clone = ws.clone();
+            let state_clone = state.clone();
+
+            let closure = Closure::once(move || {
+                // Check connection is still alive
+                let connected = unsafe {
+                    let st = &*state_clone.get();
+                    st.state == ConnectionState::Connected
+                };
+
+                if connected {
+                    let array = js_sys::Uint8Array::from(&frame[..]);
+                    if let Err(e) = ws_clone.send_with_array_buffer(&array.buffer()) {
+                        log::warn!("Deferred frame send failed: {:?}", e);
+                    }
+                }
+            });
+
+            let window = web_sys::window().expect("no window");
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                closure.as_ref().unchecked_ref(),
+                delay_ms as i32,
+            );
+            closure.forget(); // Keep alive until setTimeout fires
         }
     }
 }

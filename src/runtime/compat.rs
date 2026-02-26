@@ -10,24 +10,25 @@ use futures::Future;
 use futures::io::{AsyncRead, AsyncWrite};
 
 use super::WasmRuntime;
-use crate::transport::{WasmTcpStream, BridgeConfig};
+use crate::transport::{WasmTcpStream, BridgeConfig, TransportStream};
 use crate::{Result, TorError};
 
 // Re-export for convenience
 pub use super::sleep::WasmSleep;
 pub use super::time::WasmCoarseInstant;
 
-/// TCP Stream type for WASM
-pub type TcpStream = WasmTcpStream;
+/// TCP Stream type for WASM — unified transport stream supporting
+/// WebSocket, meek, and WebRTC transports via a single enum.
+pub type TcpStream = TransportStream;
 
 /// Future for connecting to TCP
 pub struct TcpConnectFuture {
-    inner: Pin<Box<dyn Future<Output = io::Result<WasmTcpStream>>>>,
+    inner: Pin<Box<dyn Future<Output = io::Result<TransportStream>>>>,
 }
 
 impl Future for TcpConnectFuture {
-    type Output = io::Result<WasmTcpStream>;
-    
+    type Output = io::Result<TransportStream>;
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.inner.as_mut().poll(cx)
     }
@@ -38,16 +39,17 @@ impl WasmRuntime {
     /// Connect to a TCP address via WebSocket bridge
     pub fn connect_tcp(&self, addr: SocketAddr) -> TcpConnectFuture {
         let bridge_url = self.bridge_url().to_string();
-        
+
         let future = async move {
             let config = BridgeConfig::new(bridge_url);
             let url = config.build_url(&addr);
-            
+
             WasmTcpStream::connect(&url)
                 .await
+                .map(TransportStream::WebSocket)
                 .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e.to_string()))
         };
-        
+
         TcpConnectFuture {
             inner: Box::pin(future),
         }

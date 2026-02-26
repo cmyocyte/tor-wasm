@@ -23,6 +23,10 @@ const WebSocket = require('ws');
 const http = require('http');
 const https = require('https');
 const url = require('url');
+const { serveCoverSite, setStandardHeaders } = require('./cover-site');
+const { handleHealth, startManagementServer } = require('./health-auth');
+const logger = require('./logger');
+const { TrafficMonitor } = require('./traffic-monitor');
 
 // --- Configuration ---
 const args = process.argv.slice(2);
@@ -188,11 +192,13 @@ const server = http.createServer();
 const wss = new WebSocket.Server({ server });
 
 let connectionId = 0;
+const trafficMonitor = new TrafficMonitor();
 
 wss.on('connection', (clientWs, req) => {
   const id = ++connectionId;
   const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
   console.log(`[${id}] Client connection from ${clientIp}`);
+  trafficMonitor.openConnection(id);
 
   // Global limit
   if (wss.clients.size > config.maxConnections) {
@@ -241,6 +247,7 @@ wss.on('connection', (clientWs, req) => {
 
   // Client → Bridge B (queue if Bridge B not yet connected)
   clientWs.on('message', (data) => {
+    trafficMonitor.recordFrame(id, data.length, 'up');
     if (bridgeReady) {
       bridgeWs.send(data);
     } else {
@@ -250,6 +257,7 @@ wss.on('connection', (clientWs, req) => {
 
   // Bridge B → Client
   bridgeWs.on('message', (data) => {
+    trafficMonitor.recordFrame(id, data.length, 'down');
     if (clientWs.readyState === WebSocket.OPEN) {
       clientWs.send(data);
     }
@@ -258,6 +266,7 @@ wss.on('connection', (clientWs, req) => {
   // Cleanup on either side closing
   clientWs.on('close', () => {
     console.log(`[${id}] Client disconnected`);
+    trafficMonitor.closeConnection(id);
     bridgeWs.close();
   });
 
@@ -285,53 +294,71 @@ server.on('request', (req, res) => {
 
   if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
 
-  if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+  // Health endpoint — hidden from probers, auth-gated
+  if (req.url === '/health' || req.url.startsWith('/health?')) {
+    const handled = handleHealth(req, res, {
       status: 'ok',
-      role: 'bridge-a',
       uptime: process.uptime(),
       connections: wss.clients.size,
-      maxConnections: config.maxConnections,
-      authEnabled: !!config.authToken,
-      consensusCached: !!consensusCache,
-      relayCount: consensusCache ? consensusCache.consensus.relay_count : 0,
-    }, null, 2));
-    return;
+    });
+    if (handled) return;
+    return serveCoverSite(req, res);
   }
 
-  if (req.url === '/tor/consensus') {
+  // Consensus endpoint — auth-gated + obfuscated
+  const consensusPath = process.env.CONSENSUS_PATH || '/tor/consensus';
+  if (req.url === consensusPath || req.url.startsWith(consensusPath + '?')) {
+    if (config.authToken) {
+      const reqUrl = new URL(req.url, 'http://localhost');
+      const token = reqUrl.searchParams.get('token') ||
+        (req.headers['authorization'] || '').replace('Bearer ', '');
+      if (token !== config.authToken) {
+        return serveCoverSite(req, res);
+      }
+    }
     if (!consensusCache) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Consensus not yet fetched' }));
+      res.end(JSON.stringify({ error: 'Not ready' }));
       return;
     }
     consensusCache.cacheAge = Math.floor((Date.now() - consensusCache.timestamp) / 1000);
     if (Date.now() - consensusCacheTime > CACHE_TTL) {
       fetchAndCacheConsensus().catch(() => {});
     }
+    const zlib = require('zlib');
+    const raw = JSON.stringify(consensusCache);
+    const compressed = zlib.deflateSync(Buffer.from(raw));
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(consensusCache, null, 2));
+    res.end(JSON.stringify({ v: '2', d: compressed.toString('base64'), t: Date.now() }));
     return;
   }
 
-  res.writeHead(404);
-  res.end('Not found');
+  // All other paths — serve cover site
+  serveCoverSite(req, res);
 });
 
 // --- Start ---
+// Start management server (localhost-only health endpoint)
+startManagementServer(() => ({
+  status: 'ok',
+  uptime: process.uptime(),
+  connections: wss.clients.size,
+}));
+
 server.listen(config.port, '0.0.0.0', () => {
-  console.log('');
-  console.log('============================================');
-  console.log('  Bridge A (Client-Facing, Blinded Relay)');
-  console.log('============================================');
-  console.log(`  Port: ${config.port}`);
-  console.log(`  Bridge B: ${config.bridgeBUrl}`);
-  console.log(`  WebSocket: ws://localhost:${config.port}?dest=<blob>`);
-  console.log(`  Health: http://localhost:${config.port}/health`);
-  console.log(`  Consensus: http://localhost:${config.port}/tor/consensus`);
-  console.log('============================================');
-  console.log('');
+  logger.banner([
+    '',
+    '============================================',
+    '  Bridge A (Client-Facing, Blinded Relay)',
+    '============================================',
+    `  Port: ${config.port}`,
+    `  Bridge B: ${config.bridgeBUrl}`,
+    `  WebSocket: ws://localhost:${config.port}?dest=<blob>`,
+    `  Health: http://localhost:${config.port}/health`,
+    `  Consensus: http://localhost:${config.port}${process.env.CONSENSUS_PATH || '/tor/consensus'}`,
+    '============================================',
+    '',
+  ]);
 
   fetchAndCacheConsensus().catch(() => {});
   setInterval(() => fetchAndCacheConsensus().catch(() => {}), CACHE_TTL);

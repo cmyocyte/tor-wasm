@@ -14,6 +14,10 @@ const https = require('https');
 const http = require('http');
 const tls = require('tls');
 const net = require('net');
+const { serveCoverSite } = require('./cover-site');
+const { handleHealth, startManagementServer } = require('./health-auth');
+const logger = require('./logger');
+const { TrafficMonitor } = require('./traffic-monitor');
 
 // Parse port from command line
 const port = parseInt(process.argv.find(arg => arg.startsWith('--port='))?.split('=')[1]) || 
@@ -22,6 +26,7 @@ const port = parseInt(process.argv.find(arg => arg.startsWith('--port='))?.split
 
 // Statistics
 let connectionCounter = 0;
+const trafficMonitor = new TrafficMonitor();
 const stats = {
   totalConnections: 0,
   activeConnections: 0,
@@ -43,41 +48,48 @@ const httpServer = http.createServer((req, res) => {
     return;
   }
   
-  if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+  // Health endpoint — hidden from probers, auth-gated
+  if (req.url === '/health' || req.url.startsWith('/health?')) {
+    const handled = handleHealth(req, res, {
       status: 'ok',
-      mode: 'tls-proxy',
       uptime: Math.floor((Date.now() - stats.startTime) / 1000),
-      connections: {
-        total: stats.totalConnections,
-        active: stats.activeConnections,
-      },
-      traffic: {
-        bytesIn: stats.totalBytesIn,
-        bytesOut: stats.totalBytesOut,
-      },
-    }));
-  } else if (req.url === '/tor/consensus') {
-    // Serve cached consensus (from Tor Collector)
-    if (cachedConsensus) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        consensus: cachedConsensus,
-        timestamp: consensusCacheTime,
-        cacheAge: Math.floor((Date.now() - consensusCacheTime) / 1000),
-      }));
-    } else {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        error: 'Consensus not yet fetched',
-        message: 'Server is still fetching initial consensus data',
-      }));
-    }
-  } else {
-    res.writeHead(404);
-    res.end('Not found');
+      connections: stats.activeConnections,
+    });
+    if (handled) return;
+    return serveCoverSite(req, res);
   }
+
+  // Consensus endpoint — auth-gated + obfuscated
+  const consensusPath = process.env.CONSENSUS_PATH || '/tor/consensus';
+  if (req.url === consensusPath || req.url.startsWith(consensusPath + '?')) {
+    const authToken = process.env.BRIDGE_AUTH_TOKEN;
+    if (authToken) {
+      const reqUrl = new URL(req.url, 'http://localhost');
+      const token = reqUrl.searchParams.get('token') ||
+        (req.headers['authorization'] || '').replace('Bearer ', '');
+      if (token !== authToken) {
+        return serveCoverSite(req, res);
+      }
+    }
+    if (!cachedConsensus) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not ready' }));
+      return;
+    }
+    const zlib = require('zlib');
+    const rawData = {
+      consensus: cachedConsensus,
+      timestamp: consensusCacheTime,
+      cacheAge: Math.floor((Date.now() - consensusCacheTime) / 1000),
+    };
+    const compressed = zlib.deflateSync(Buffer.from(JSON.stringify(rawData)));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ v: '2', d: compressed.toString('base64'), t: Date.now() }));
+    return;
+  }
+
+  // All other paths — serve cover site
+  serveCoverSite(req, res);
 });
 
 // WebSocket server for TLS proxy connections
@@ -87,7 +99,8 @@ wss.on('connection', (ws, req) => {
   const connId = ++connectionCounter;
   stats.totalConnections++;
   stats.activeConnections++;
-  
+  trafficMonitor.openConnection(connId);
+
   // Parse target address from query string
   const url = new URL(req.url, `http://${req.headers.host}`);
   const targetAddr = url.searchParams.get('addr');
@@ -145,6 +158,7 @@ wss.on('connection', (ws, req) => {
       });
       
       tlsSocket.on('data', (data) => {
+        trafficMonitor.recordFrame(connId, data.length, 'down');
         if (ws.readyState === WebSocket.OPEN) {
           stats.totalBytesOut += data.length;
           // Send raw bytes to browser
@@ -201,6 +215,7 @@ wss.on('connection', (ws, req) => {
     
     // Forward raw bytes to relay
     if (tlsSocket && !tlsSocket.destroyed) {
+      trafficMonitor.recordFrame(connId, data.length, 'up');
       stats.totalBytesIn += data.length;
       tlsSocket.write(data);
       console.log(`[${connId}] ➡️  Browser → Relay: ${data.length} bytes`);
@@ -209,6 +224,7 @@ wss.on('connection', (ws, req) => {
   
   ws.on('close', () => {
     console.log(`[${connId}] 🔌 WebSocket closed`);
+    trafficMonitor.closeConnection(connId);
     if (tlsSocket && !tlsSocket.destroyed) {
       tlsSocket.end();
     }

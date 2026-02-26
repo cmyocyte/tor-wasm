@@ -1,0 +1,46 @@
+name: Mobile Browser Tests
+
+on:
+  schedule:
+    # Weekly on Monday at 06:00 UTC (off-peak BrowserStack pricing)
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      bridge_url:
+        description: 'Bridge WebSocket URL for testing'
+        required: false
+        default: 'wss://bridge.example.com'
+
+jobs:
+  mobile-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install BrowserStack CLI
+        run: npm install -g browserstack-runner
+
+      - name: Run mobile test suite
+        env:
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          TEST_BRIDGE_URL: ${{ inputs.bridge_url || 'wss://bridge.example.com' }}
+        run: |
+          cd tests/mobile
+          browserstack-runner --config browserstack.config.js 2>&1 | tee results.log
+          # Parse results
+          grep -c "PASS" results.log > /dev/null && echo "Tests completed"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-test-results-${{ github.run_number }}
+          path: tests/mobile/results.log
+          retention-days: 90

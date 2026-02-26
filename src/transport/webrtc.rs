@@ -219,7 +219,11 @@ impl WasmRtcStream {
             let cb = Closure::wrap(Box::new(move |event: JsValue| {
                 let event: RtcDataChannelEvent = event.unchecked_into();
                 let channel = event.channel();
-                channel.set_binary_type(web_sys::RtcDataChannelType::Arraybuffer);
+                let _ = js_sys::Reflect::set(
+                    &channel,
+                    &"binaryType".into(),
+                    &"arraybuffer".into(),
+                );
 
                 // Set up data handlers on the received channel
                 let state_for_msg = state_clone.clone();

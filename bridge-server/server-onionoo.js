@@ -15,6 +15,10 @@ const net = require('net');
 const https = require('https');
 const http = require('http');
 const url = require('url');
+const { serveCoverSite } = require('./cover-site');
+const { handleHealth, startManagementServer } = require('./health-auth');
+const logger = require('./logger');
+const { TrafficMonitor } = require('./traffic-monitor');
 
 // Tor consensus/descriptor cache
 let consensusCache = null;
@@ -158,6 +162,7 @@ const wss = new WebSocket.Server({ server });
 
 // Connection counter for logging
 let connectionId = 0;
+const trafficMonitor = new TrafficMonitor();
 
 // HTTP endpoints
 server.on('request', (req, res) => {
@@ -172,60 +177,62 @@ server.on('request', (req, res) => {
     return;
   }
   
-  // Health check endpoint
-  if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+  // Health endpoint — hidden from probers, auth-gated
+  if (req.url === '/health' || req.url.startsWith('/health?')) {
+    const handled = handleHealth(req, res, {
       status: 'ok',
       uptime: process.uptime(),
       connections: wss.clients.size,
-      consensusCached: consensusCache !== null,
-      consensusAge: consensusCache ? Math.floor((Date.now() - consensusCacheTime) / 1000) : null,
-      relayCount: consensusCache?.consensus?.relay_count || 0,
-      source: consensusCache?.source || null,
-    }));
-    return;
+    });
+    if (handled) return;
+    return serveCoverSite(req, res);
   }
-  
-  // Tor consensus endpoint
-  if (req.url === '/tor/consensus') {
+
+  // Consensus endpoint — auth-gated + obfuscated
+  const consensusPath = process.env.CONSENSUS_PATH || '/tor/consensus';
+  if (req.url === consensusPath || req.url.startsWith(consensusPath + '?')) {
+    const authToken = process.env.BRIDGE_AUTH_TOKEN;
+    if (authToken) {
+      const reqUrl = new URL(req.url, 'http://localhost');
+      const token = reqUrl.searchParams.get('token') ||
+        (req.headers['authorization'] || '').replace('Bearer ', '');
+      if (token !== authToken) {
+        return serveCoverSite(req, res);
+      }
+    }
     if (!consensusCache) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        error: 'Consensus not yet fetched',
-        message: 'Please wait a moment and try again',
-      }));
+      res.end(JSON.stringify({ error: 'Not ready' }));
       return;
     }
-    
-    // Check if cache is stale
+
     const cacheAge = Date.now() - consensusCacheTime;
     if (cacheAge > CACHE_TTL) {
-      // Trigger refresh in background
-      fetchAndCacheConsensus().catch(console.error);
+      fetchAndCacheConsensus().catch(logger.error);
     }
-    
-    // Return cached data
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+
+    const zlib = require('zlib');
+    const rawData = {
       consensus: consensusCache.consensus,
       timestamp: consensusCache.timestamp,
       cacheAge: Math.floor(cacheAge / 1000),
-      source: consensusCache.source,
-    }));
+    };
+    const compressed = zlib.deflateSync(Buffer.from(JSON.stringify(rawData)));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ v: '2', d: compressed.toString('base64'), t: Date.now() }));
     return;
   }
-  
-  // 404 for all other routes
-  res.writeHead(404);
-  res.end('Not Found');
+
+  // All other paths — serve cover site
+  serveCoverSite(req, res);
 });
 
 wss.on('connection', (ws, req) => {
   const id = ++connectionId;
   const clientIp = req.socket.remoteAddress;
-  
+
   console.log(`[${id}] 🔌 New WebSocket connection from ${clientIp}`);
+  trafficMonitor.openConnection(id);
 
   // Parse target address from query string
   const params = url.parse(req.url, true).query;
@@ -264,6 +271,7 @@ wss.on('connection', (ws, req) => {
 
   // TCP → WebSocket
   tcpSocket.on('data', (data) => {
+    trafficMonitor.recordFrame(id, data.length, 'down');
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(data);
       console.log(`[${id}] ⬅️  TCP → WS: ${data.length} bytes`);
@@ -272,6 +280,7 @@ wss.on('connection', (ws, req) => {
 
   // WebSocket → TCP
   ws.on('message', (data) => {
+    trafficMonitor.recordFrame(id, data.length, 'up');
     if (tcpConnected) {
       tcpSocket.write(Buffer.from(data));
       console.log(`[${id}] ➡️  WS → TCP: ${data.length} bytes`);
@@ -303,6 +312,7 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', (code, reason) => {
     console.log(`[${id}] 🔌 WebSocket connection closed (${code}${reason ? ': ' + reason : ''})`);
+    trafficMonitor.closeConnection(id);
     if (tcpConnected) {
       tcpSocket.destroy();
     }

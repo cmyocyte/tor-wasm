@@ -29,11 +29,12 @@ tor-wasm's security relies on:
 
 ### Known Limitations
 
-- **Bridge operator visibility:** Bridge sees client IP and guard relay IP (but not destinations or content)
-- **Single bridge per circuit:** Supports multiple bridges with fallback sequencing (`BridgeConfiguration`), but all hops in a circuit use the same bridge (per-hop bridge diversity planned)
-- **No pluggable transports:** Bridge connections are identifiable as WebSocket traffic (obfs4 integration planned)
+- **Bridge operator visibility:** Bridge sees client IP and guard relay IP (but not destinations or content). Mitigated in blinded mode (two-hop)
+- **Multiple transports with failover:** WebSocket, WebTunnel (HMAC probe-resistant), meek (CDN relay). Automatic failover chain in `connectWithFailover()`
+- **In-app bridge manager:** Users can add/remove bridges via settings panel (IndexedDB storage, QR scanner, JSON import). Bridges also distributed via Telegram bot, email, QR codes, and offline bundles
+- **WebTunnel probe resistance:** HMAC-SHA256 challenge (`Sec-WebSocket-Protocol: v1.<hmac>.<timestamp>`) prevents active probers from confirming bridge identity. Invalid HMAC returns identical 404
 - **No onion services:** Only clearnet destinations supported currently
-- **Browser fingerprinting:** tor-wasm includes a comprehensive fingerprint defense module (`src/fingerprint-defense.js`) covering 18 vectors across 3 tiers with anti-detection measures. See "Fingerprint Defense Module" section below for details
+- **Browser fingerprinting:** tor-wasm includes a comprehensive fingerprint defense module (`src/fingerprint-defense.js`) covering 20 vectors across 3 tiers with anti-detection measures. See "Fingerprint Defense Module" section below for details
 
 ## Cryptographic Dependencies
 
@@ -48,11 +49,11 @@ tor-wasm's security relies on:
 
 ## Fingerprint Defense Module
 
-tor-wasm includes a comprehensive browser fingerprint defense (`src/fingerprint-defense.js`) covering 18 fingerprinting vectors across 3 tiers, with anti-detection measures that make overrides invisible to fingerprinting scripts.
+tor-wasm includes a comprehensive browser fingerprint defense (`src/fingerprint-defense.js`) covering 20 fingerprinting vectors across 3 tiers, with anti-detection measures that make overrides invisible to fingerprinting scripts.
 
 ```javascript
 import { applyFingerprintDefense } from './fingerprint-defense.js';
-applyFingerprintDefense(); // Apply all 18 defenses
+applyFingerprintDefense(); // Apply all 20 defenses
 applyFingerprintDefense({ canvas: true, webgl: true, webrtc: true, timezone: false }); // Selective
 ```
 
@@ -114,10 +115,14 @@ All API overrides use **native function toString spoofing**: `Function.prototype
 
 This security policy covers:
 - The Rust WASM module (`src/`)
-- The bridge server (`bridge-server/`)
+- The bridge server (`bridge-server/`), including WebTunnel (`server-webtunnel.js`) and meek (`server-meek.js`)
 - The tor-core library (`tor-core/`)
 - The fingerprint defense module (`src/fingerprint-defense.js`)
+- The Cloudflare Worker (`worker/`) — meek relay + app hosting
+- The browser app (`app/index.html`) — bridge manager, settings panel, IndexedDB bridge storage
+- Bridge distribution tools (`bridge-server/distribution/`) — Telegram bot, email responder, QR generator
 
 It does not cover:
 - Example HTML files (for demonstration only)
+- Offline bundle generator (`tools/bundle-offline.js`) — build tool only
 - Development tooling

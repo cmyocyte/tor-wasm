@@ -36,7 +36,7 @@ We gratefully acknowledge the [**Tor Project**](https://www.torproject.org/) for
 
 ### License
 
-MIT / Apache 2.0
+AGPL-3.0. For commercial licensing inquiries, contact cmyocyte@gmail.com
 
 ### Links
 
@@ -55,6 +55,11 @@ A **real Tor client** compiled to WebAssembly that:
 - ✅ Connects to 9,000+ real Tor relays
 - ✅ Does onion encryption/decryption in the browser
 - ✅ Hides your IP from destination servers
+- ✅ Multiple transports: WebSocket, WebTunnel, meek (CDN relay)
+- ✅ In-app bridge manager with QR scanning
+- ✅ Probe-resistant WebTunnel handshake (HMAC-SHA256)
+- ✅ Deployable as Cloudflare Worker (domain fronting + meek relay)
+- ✅ 4 languages: English, Farsi, Russian, Chinese
 
 ## 🏗️ Architecture
 
@@ -87,7 +92,8 @@ Browser (WASM)  →  Volunteer Proxy (WebRTC→WS)  →  Bridge A  →  Bridge B
 │  │  • Circuit building (Guard → Middle → Exit)             │  │
 │  │  • Bridge blinding (X25519 + AES-256-GCM)               │  │
 │  │  • 20-vector fingerprint defense                        │  │
-│  │  • Transport: WebSocket or WebRTC DataChannel           │  │
+│  │  • Transport: WebSocket, WebTunnel, meek, WebRTC         │  │
+│  │  • In-app bridge manager (IndexedDB + QR scanner)         │  │
 │  └──────────────────────────────────────────────────────────┘  │
 └───────────────────────────┼────────────────────────────────────┘
                             │
@@ -118,14 +124,20 @@ src/
 
 ### `/bridge-server` - Node.js Bridge
 
-WebSocket to TCP proxy server:
+WebSocket/WebTunnel/meek bridge servers:
 
 ```
 bridge-server/
 ├── server-collector.js    # Main server (fetches consensus)
 ├── server-bridge-a.js     # Bridge A: client-facing relay (blinded mode)
 ├── server-bridge-b.js     # Bridge B: relay-facing decryptor (blinded mode)
+├── server-webtunnel.js    # WebTunnel bridge (HMAC probe-resistant)
+├── server-meek.js         # Meek bridge (HTTP POST through CDN)
 ├── keygen.js              # Generate Bridge B X25519 keypair
+├── distribution/
+│   ├── telegram-bot.js    # Telegram bridge distribution bot
+│   ├── email-responder.js # Email auto-responder for bridges
+│   └── qr-generator.js   # QR code bridge config generator
 ├── package.json
 ├── DEPLOY.md              # Single-bridge deployment
 └── DEPLOY-BLINDED.md      # Two-hop blinded deployment + ECH
@@ -149,6 +161,45 @@ Solidarity webpage — volunteer opens a browser tab to help censored users:
 proxy/
 ├── proxy.js      # Browser-based WebRTC relay (~200 lines)
 └── index.html    # Solidarity Bridge webpage
+```
+
+### `/app` - Browser UI (PWA)
+
+The privacy browser frontend with i18n and bridge management:
+
+```
+app/
+├── index.html         # Full app: boot sequence, bridge manager, settings panel
+├── i18n/
+│   ├── en.json        # English
+│   ├── fa.json        # Farsi (RTL)
+│   ├── ru.json        # Russian
+│   └── zh.json        # Chinese
+└── sw.js              # Service Worker for offline + sub-resource routing
+```
+
+### `/worker` - Cloudflare Worker
+
+Censorship-resistant hosting — serves the app AND acts as a meek bridge relay from `*.workers.dev`:
+
+```
+worker/
+├── wrangler.toml      # Wrangler config (Durable Objects binding)
+├── src/index.ts       # Router + meek relay + cover site (~280 lines)
+├── package.json
+└── tsconfig.json
+```
+
+Routes:
+- `GET /` — cover site (looks like a blog)
+- `GET /?v=1` — the WASM app (steganographic URL)
+- `POST /` — meek bridge relay (X-Session-Id + X-Target headers)
+
+### `/tools` - Build & Distribution Tools
+
+```
+tools/
+└── bundle-offline.js  # Generate self-contained offline HTML (~3-4MB)
 ```
 
 ### `/pkg` - WASM Output
@@ -228,6 +279,42 @@ const response = await client.fetch('http://example.com');
 
 In blinded mode, **no single entity** can see both your IP and which guard relay you connect to. Correlation requires collusion between Bridge A and Bridge B operators.
 
+## 🌐 Transport Failover Chain
+
+The client automatically tries transports in order of censorship resistance:
+
+```
+1. WebSocket (direct)     → fastest, blocked by protocol DPI
+2. WebTunnel (WS + HMAC)  → looks like normal HTTPS, probe-resistant
+3. meek (HTTP POST + CDN) → survives full protocol blocking (GFW)
+```
+
+WebTunnel connections use HMAC-SHA256 probe resistance: `Sec-WebSocket-Protocol: v1.<hmac>.<timestamp>`. A prober who discovers the path but doesn't know the HMAC gets an identical 404 — indistinguishable from a wrong URL.
+
+## 🔧 Deployment Options
+
+### Self-hosted bridge
+```bash
+cd bridge-server && npm install && node server-collector.js
+```
+
+### Cloudflare Worker (recommended for censored regions)
+```bash
+cd worker && npx wrangler deploy
+# Serves app + meek relay on *.workers.dev — blocking it causes collateral damage
+```
+
+### Offline bundle (sneakernet for shutdowns)
+```bash
+node tools/bundle-offline.js --bridges bridges.json --output offline.html
+# Single ~3-4MB HTML file, share via USB/Bluetooth/AirDrop
+```
+
+### Bridge distribution
+- **Telegram bot**: `bridge-server/distribution/telegram-bot.js` — `/start` to receive bridge URL
+- **QR codes**: `bridge-server/distribution/qr-generator.js`
+- **Email auto-responder**: `bridge-server/distribution/email-responder.js`
+
 ## ⚠️ Important Notes
 
 1. **Bridge Server Trust**: In direct mode, the bridge sees your IP and the guard relay. In blinded mode (two-hop), this trust is split — no single bridge sees both. See `papers/BRIDGE-TRUST-ELIMINATION.md` for details.
@@ -243,7 +330,7 @@ In blinded mode, **no single entity** can see both your IP and which guard relay
 
 ## 📄 License
 
-MIT / Apache 2.0 (compatible with Arti's licensing)
+AGPL-3.0 (open source, OSI-approved). For commercial licensing inquiries, contact cmyocyte@gmail.com
 
 ---
 

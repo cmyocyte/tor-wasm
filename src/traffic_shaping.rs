@@ -282,12 +282,205 @@ fn current_time_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Traffic profile that mimics a specific application's WebSocket behavior.
+///
+/// DPI systems classify encrypted WebSocket traffic by statistical features:
+/// - Frame size distribution (mean, variance, histogram)
+/// - Inter-arrival timing (bursts vs steady)
+/// - Up/down byte ratio
+///
+/// These profiles shape Tor cell traffic to statistically resemble
+/// legitimate WebSocket applications, making classification harder.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum TrafficProfile {
+    /// No shaping — raw Tor cells (514 bytes each)
+    None,
+
+    /// Chat application (e.g., WhatsApp Web, Telegram Web)
+    /// - Small bursts (50-200 bytes) with idle gaps (500-3000ms)
+    /// - Occasional large messages (200-1000 bytes)
+    /// - Up/down ratio ~0.3 (more received than sent)
+    Chat,
+
+    /// Stock ticker / real-time data feed
+    /// - Steady small frames (20-100 bytes) every 100-500ms
+    /// - Very low up traffic (heartbeats only)
+    /// - Up/down ratio ~0.05
+    Ticker,
+
+    /// Video call (e.g., Jitsi, Google Meet)
+    /// - Sustained high bandwidth (800-1200 byte frames)
+    /// - Steady 30-50ms inter-arrival (30fps video)
+    /// - Up/down ratio ~0.8 (roughly symmetric)
+    Video,
+}
+
+impl Default for TrafficProfile {
+    fn default() -> Self {
+        TrafficProfile::None
+    }
+}
+
+/// Frame size range for a traffic profile
+#[derive(Debug, Clone)]
+pub struct FrameSizeRange {
+    pub min: usize,
+    pub max: usize,
+}
+
+/// Profile-specific traffic parameters
+#[derive(Debug, Clone)]
+pub struct ProfileParams {
+    /// Target frame sizes (data will be fragmented/padded to fit)
+    pub frame_sizes: FrameSizeRange,
+    /// Minimum inter-frame delay in milliseconds
+    pub min_delay_ms: u64,
+    /// Maximum inter-frame delay in milliseconds
+    pub max_delay_ms: u64,
+    /// Probability of inserting an idle gap (simulates user think time)
+    pub idle_gap_probability: f32,
+    /// Idle gap duration range (ms)
+    pub idle_gap_min_ms: u64,
+    pub idle_gap_max_ms: u64,
+}
+
+impl TrafficProfile {
+    /// Get the shaping parameters for this profile
+    pub fn params(&self) -> Option<ProfileParams> {
+        match self {
+            TrafficProfile::None => None,
+            TrafficProfile::Chat => Some(ProfileParams {
+                frame_sizes: FrameSizeRange { min: 50, max: 200 },
+                min_delay_ms: 20,
+                max_delay_ms: 150,
+                idle_gap_probability: 0.15,
+                idle_gap_min_ms: 500,
+                idle_gap_max_ms: 3000,
+            }),
+            TrafficProfile::Ticker => Some(ProfileParams {
+                frame_sizes: FrameSizeRange { min: 20, max: 100 },
+                min_delay_ms: 100,
+                max_delay_ms: 500,
+                idle_gap_probability: 0.0,
+                idle_gap_min_ms: 0,
+                idle_gap_max_ms: 0,
+            }),
+            TrafficProfile::Video => Some(ProfileParams {
+                frame_sizes: FrameSizeRange { min: 800, max: 1200 },
+                min_delay_ms: 25,
+                max_delay_ms: 50,
+                idle_gap_probability: 0.0,
+                idle_gap_min_ms: 0,
+                idle_gap_max_ms: 0,
+            }),
+        }
+    }
+}
+
+/// Fragment a data buffer into profile-matching frame sizes.
+///
+/// Instead of sending Tor cells as 514-byte WebSocket frames (trivially
+/// fingerprinted), this splits data into random sizes matching the target
+/// profile's distribution.
+///
+/// Returns a Vec of frame payloads. Each frame may need padding to reach
+/// the minimum size. If data is smaller than `min`, it is padded.
+pub fn fragment_for_profile(data: &[u8], profile: &TrafficProfile, rng_state: &mut u64) -> Vec<Vec<u8>> {
+    let params = match profile.params() {
+        Some(p) => p,
+        None => return vec![data.to_vec()], // No fragmentation
+    };
+
+    let mut frames = Vec::new();
+    let mut offset = 0;
+
+    while offset < data.len() {
+        // Random frame size within profile range
+        let range = params.frame_sizes.max - params.frame_sizes.min;
+        let frame_size = if range > 0 {
+            params.frame_sizes.min + (xorshift64(rng_state) as usize % (range + 1))
+        } else {
+            params.frame_sizes.min
+        };
+
+        let end = (offset + frame_size).min(data.len());
+        let mut frame = data[offset..end].to_vec();
+
+        // Pad to minimum frame size if undersized
+        if frame.len() < params.frame_sizes.min {
+            let pad_len = params.frame_sizes.min - frame.len();
+            // Append random padding bytes
+            for _ in 0..pad_len {
+                frame.push((xorshift64(rng_state) & 0xFF) as u8);
+            }
+        }
+
+        frames.push(frame);
+        offset = end;
+    }
+
+    // Handle empty data — send at least one padded frame
+    if frames.is_empty() {
+        let pad_len = params.frame_sizes.min;
+        let mut frame = Vec::with_capacity(pad_len);
+        for _ in 0..pad_len {
+            frame.push((xorshift64(rng_state) & 0xFF) as u8);
+        }
+        frames.push(frame);
+    }
+
+    frames
+}
+
+/// Calculate inter-frame delay for a traffic profile.
+///
+/// Returns the delay to wait before sending the next frame,
+/// including possible idle gaps to simulate human behavior.
+pub fn profile_delay(profile: &TrafficProfile, rng_state: &mut u64) -> Duration {
+    let params = match profile.params() {
+        Some(p) => p,
+        None => return Duration::ZERO,
+    };
+
+    // Check for idle gap (simulates user pausing)
+    if params.idle_gap_probability > 0.0 {
+        let r = (xorshift64(rng_state) % 10000) as f32 / 10000.0;
+        if r < params.idle_gap_probability {
+            let gap_range = params.idle_gap_max_ms - params.idle_gap_min_ms;
+            let gap = if gap_range > 0 {
+                params.idle_gap_min_ms + (xorshift64(rng_state) % (gap_range + 1))
+            } else {
+                params.idle_gap_min_ms
+            };
+            return Duration::from_millis(gap);
+        }
+    }
+
+    // Normal inter-frame delay
+    let delay_range = params.max_delay_ms - params.min_delay_ms;
+    let delay = if delay_range > 0 {
+        params.min_delay_ms + (xorshift64(rng_state) % (delay_range + 1))
+    } else {
+        params.min_delay_ms
+    };
+
+    Duration::from_millis(delay)
+}
+
+/// Simple xorshift64 PRNG (deterministic, fast, no dependencies)
+fn xorshift64(state: &mut u64) -> u64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
+}
+
 /// Async helper to apply timing delays
 pub async fn apply_delay(delay: Duration) {
     if delay.is_zero() {
         return;
     }
-    
+
     gloo_timers::future::TimeoutFuture::new(delay.as_millis() as u32).await;
 }
 
@@ -353,15 +546,89 @@ mod tests {
             chaff_interval_secs: 1, // 1 second for testing
             ..Default::default()
         });
-        
+
         // Simulate last cell sent long ago
         shaper.last_cell_sent_ms = current_time_ms() - 2000; // 2 seconds ago
-        
+
         assert!(shaper.should_send_chaff());
-        
+
         // After sending a cell, should not need chaff
         shaper.record_cell_sent();
         assert!(!shaper.should_send_chaff());
+    }
+
+    #[test]
+    fn test_traffic_profile_params() {
+        assert!(TrafficProfile::None.params().is_none());
+
+        let chat = TrafficProfile::Chat.params().unwrap();
+        assert!(chat.frame_sizes.min >= 50);
+        assert!(chat.frame_sizes.max <= 200);
+        assert!(chat.idle_gap_probability > 0.0);
+
+        let ticker = TrafficProfile::Ticker.params().unwrap();
+        assert!(ticker.frame_sizes.min >= 20);
+        assert!(ticker.frame_sizes.max <= 100);
+        assert_eq!(ticker.idle_gap_probability, 0.0);
+
+        let video = TrafficProfile::Video.params().unwrap();
+        assert!(video.frame_sizes.min >= 800);
+        assert!(video.frame_sizes.max <= 1200);
+        assert!(video.min_delay_ms <= 50);
+    }
+
+    #[test]
+    fn test_fragment_for_profile_chat() {
+        let data = vec![0u8; 514]; // One Tor cell
+        let mut rng = 12345u64;
+        let frames = fragment_for_profile(&data, &TrafficProfile::Chat, &mut rng);
+
+        // 514 bytes should be split into multiple chat-sized frames (50-200 bytes)
+        assert!(frames.len() >= 3); // 514 / 200 = 2.57, so at least 3
+        for frame in &frames {
+            assert!(frame.len() >= 50, "Frame too small: {}", frame.len());
+            assert!(frame.len() <= 200, "Frame too large: {}", frame.len());
+        }
+    }
+
+    #[test]
+    fn test_fragment_for_profile_none() {
+        let data = vec![42u8; 514];
+        let mut rng = 99999u64;
+        let frames = fragment_for_profile(&data, &TrafficProfile::None, &mut rng);
+
+        // No fragmentation — single frame with original data
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].len(), 514);
+    }
+
+    #[test]
+    fn test_fragment_empty_data() {
+        let data = vec![];
+        let mut rng = 11111u64;
+        let frames = fragment_for_profile(&data, &TrafficProfile::Chat, &mut rng);
+
+        // Should produce at least one padded frame
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].len() >= 50);
+    }
+
+    #[test]
+    fn test_profile_delay() {
+        let mut rng = 54321u64;
+
+        // None profile — zero delay
+        let d = profile_delay(&TrafficProfile::None, &mut rng);
+        assert_eq!(d, Duration::ZERO);
+
+        // Chat profile — delay between 20-150ms (or idle gap 500-3000ms)
+        let d = profile_delay(&TrafficProfile::Chat, &mut rng);
+        assert!(d.as_millis() <= 3000);
+
+        // Video profile — delay between 25-50ms
+        let d = profile_delay(&TrafficProfile::Video, &mut rng);
+        assert!(d.as_millis() >= 25);
+        assert!(d.as_millis() <= 50);
     }
 }
 

@@ -3,11 +3,14 @@ FROM node:20-alpine
 WORKDIR /app
 COPY package*.json ./
 RUN npm install --production
-COPY server-bridge-a.js ./
+COPY server-bridge-a.js cover-site.js health-auth.js logger.js dns-safe.js traffic-monitor.js ./
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+ENV MANAGEMENT_PORT=9091
+ENV QUIET_MODE=1
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:9091/health || exit 1
 
 CMD ["node", "server-bridge-a.js"]

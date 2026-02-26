@@ -1,0 +1,60 @@
+{
+  "lang": "en",
+  "dir": "ltr",
+  "brand": "Private Browser",
+  "tagline": "Your traffic is routed through 3 encrypted relays",
+  "boot": {
+    "init": "Loading encryption module",
+    "defense": "Applying fingerprint defenses",
+    "bridge": "Connecting to bridge server",
+    "circuit": "Building encrypted circuit through Tor"
+  },
+  "status": {
+    "connecting": "Connecting...",
+    "ready": "Ready",
+    "failed": "Connection failed",
+    "retrying": "Retrying...",
+    "redirecting": "Redirecting...",
+    "newIdentity": "New identity...",
+    "identityFailed": "Failed"
+  },
+  "loading": {
+    "resources": "Loading {completed}/{total}",
+    "done": "{completed} loaded, {blocked} trackers blocked",
+    "doneNoBlock": "{completed} resources loaded"
+  },
+  "error": {
+    "connectionFailed": "Could not connect. Please try again later.",
+    "pageFailed": "Could not load page",
+    "pageFailedDetail": "The connection failed after multiple attempts. Try clicking reload."
+  },
+  "bridges": {
+    "heading": "Bridges",
+    "empty": "No custom bridges configured",
+    "placeholder": "Paste bridge URL, JSON config, or scan QR...",
+    "add": "Add Bridge",
+    "scanQr": "Scan QR",
+    "added": "Bridge added",
+    "invalid": "Could not parse bridge config",
+    "deleted": "Bridge removed",
+    "duplicate": "Bridge already exists",
+    "testing": "Testing connection...",
+    "reachable": "Reachable",
+    "unreachable": "Unreachable"
+  },
+  "share": {
+    "title": "Private Browser",
+    "text": "Browse freely with encrypted Tor routing",
+    "copied": "Link copied!"
+  },
+  "ui": {
+    "urlPlaceholder": "Enter URL or search...",
+    "reload": "Reload",
+    "back": "Back",
+    "forward": "Forward",
+    "newIdentity": "New Identity",
+    "settings": "Settings",
+    "share": "Share",
+    "close": "Close"
+  }
+}

@@ -1,11 +1,22 @@
 # Security Architecture
 
+## Client Bootstrap: Zero DNS Leaks
+
+The WASM client performs **zero DNS queries to Tor infrastructure**. All bootstrap data and relay connections are proxied through the bridge server:
+
+- **Consensus fetch**: The client calls `fetch()` to `{bridge_url}/tor/consensus` — the only DNS query is for the bridge domain itself (protected by ECH via Cloudflare).
+- **Relay connections**: All TCP connections to Tor relays go through the bridge's WebSocket-to-TCP proxy.
+- **Fallback consensus**: Uses hardcoded relay IPs — no DNS resolution required.
+- **No phone-home**: The WASM binary makes no requests to `torproject.org`, directory authorities, or any other identifiable Tor infrastructure.
+
+This design ensures that even in environments with DNS monitoring (Russia, China, Iran), the client's DNS queries reveal nothing about Tor usage.
+
 ## Cryptographic Primitives
 
 | Primitive | Algorithm | Library | Usage |
 |-----------|-----------|---------|-------|
 | Key Exchange | X25519 (Curve25519) | `x25519-dalek` | ntor handshake |
-| HMAC | HMAC-SHA256 | `hmac` + `sha2` | ntor key derivation |
+| HMAC | HMAC-SHA256 | `hmac` + `sha2` | ntor key derivation, WebTunnel probe resistance |
 | Relay Encryption | AES-128-CTR | `aes` + `ctr` | Per-hop onion encryption |
 | Relay Digest | SHA-1 | `sha1` | Cell integrity verification |
 | Certificate Signing | Ed25519 | `ed25519-dalek` | Relay identity binding |
@@ -142,10 +153,69 @@ All defenses are implemented in Rust compiled to WASM. Each defense:
 - Provided via `Authorization: Bearer <token>` header or `?token=<token>` query parameter
 - If unset, anonymous access allowed (backward compatible)
 
-### Transport
-- WebSocket over HTTP (upgradable to WSS with reverse proxy)
-- TLS to relay (self-signed, `rejectUnauthorized: false`)
-- No SNI for IP address targets
+### Transport Failover
+The client tries transports in order of censorship resistance:
+
+1. **WebSocket** (direct) — fastest, identifiable by protocol DPI
+2. **WebTunnel** (WS + HMAC) — looks like normal HTTPS WebSocket upgrade, probe-resistant
+3. **meek** (HTTP POST through CDN) — survives full protocol blocking (e.g., GFW)
+
+All transports use TLS to relay (`rejectUnauthorized: false` for self-signed relay certs). No SNI for IP address targets.
+
+### WebTunnel Probe Resistance (HMAC-SHA256)
+
+Active probers (Russia TSPU, China GFW) connect to suspected bridges to confirm their identity. WebTunnel prevents this:
+
+```
+Client sends:  Sec-WebSocket-Protocol: v1.<HMAC-SHA256(secret_path, timestamp)[0:128bit]>.<timestamp>
+Server checks: timestamp within 5 min, HMAC matches (timing-safe), upgrades if valid
+Invalid:       identical 404 response (same headers, same cover page as wrong path)
+```
+
+**Implementation:**
+- Server: `bridge-server/server-webtunnel.js` — `verifyHmacChallenge(req)` with `crypto.timingSafeEqual()`
+- Client (Rust): `src/transport/webtunnel.rs` — `compute_hmac_challenge(secret_path)` using `hmac` + `sha2` crates
+- Client (JS): `app/index.html` — `computeWebTunnelHmac(secretPath)` using Web Crypto API
+
+**Security properties:**
+- HMAC key = the secret path (user needs only one piece of information)
+- Truncated to 128 bits (32 hex chars) — sufficient for authentication
+- 5-minute timestamp window (generous for clock skew in censored regions)
+- Prober with only the path gets identical 404 — indistinguishable from wrong URL
+- Cover site mimics nginx/1.24.0 headers on all responses
+
+### Cloudflare Worker Architecture
+
+The Worker (`worker/src/index.ts`) solves the bootstrap problem: censors see HTTPS to `*.workers.dev` — blocking it causes collateral damage to thousands of legitimate services.
+
+```
+GET /           → cover site (convincing blog page)
+GET /?v=1       → the WASM app (steganographic URL, configurable via APP_SECRET)
+POST /          → meek bridge relay (X-Session-Id + X-Target headers)
+GET /health     → cover site (unless HEALTH_TOKEN matches)
+```
+
+**Meek relay via Durable Objects:**
+- Each `X-Session-Id` maps to a Durable Object holding a persistent TCP socket
+- Durable Object uses Cloudflare's `connect()` API for TLS to Tor guard relay
+- Session persists across HTTP POST requests (~60s idle timeout)
+- Protocol mirrors `server-meek.js` — existing WASM meek client speaks it natively
+
+**Client auto-detection:** When served from `*.workers.dev` or `*.pages.dev`, the app automatically adds `location.origin` to the meek bridge list (zero configuration).
+
+### Bridge Distribution Channels
+
+Multiple channels to solve the bridge URL distribution problem:
+
+| Channel | Tool | Anti-Enumeration |
+|---------|------|-----------------|
+| Telegram bot | `distribution/telegram-bot.js` | Rate-limited (1/hour per user ID hash) |
+| Email responder | `distribution/email-responder.js` | Rate-limited per sender |
+| QR codes | `distribution/qr-generator.js` | Physical sharing only |
+| Offline bundle | `tools/bundle-offline.js` | Sneakernet (USB/Bluetooth/AirDrop) |
+| In-app bridge manager | `app/index.html` | User adds bridges via QR scan, paste, or JSON import |
+
+Bridge configs use a common JSON format (`{u, k, m}`) compatible across all channels. The in-app bridge manager auto-detects format (WebSocket URL, WebTunnel `{url, path}`, meek URL, Lox credential `{i, c, a}`).
 
 ## Bridge Trust Elimination
 
@@ -205,7 +275,8 @@ Volunteer proxies run as browser tabs (no installation). The censored client con
 | Fingerprint Defense | 22 | WASM integration |
 | Protocol Security | 32 | WASM integration |
 | Module Unit Tests | 124+ | In-module |
-| **Total** | **178+** | |
+| Censorship Simulation | 4 | Node.js integration |
+| **Total** | **182+** | |
 
 ### Test Categories
 - Cryptographic correctness (key derivation, zeroization)
@@ -213,3 +284,4 @@ Volunteer proxies run as browser tabs (no installation). The censored client con
 - Security enforcement (consensus verification, cert chain, family constraints)
 - Edge cases (truncated data, malformed input, boundary conditions)
 - Fingerprint defense validation (all 20 vectors)
+- Censorship resistance (`tests/censorship-sim/`): DNS leak detection, traffic classification, signature scanning, active probing

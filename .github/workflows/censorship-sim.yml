@@ -1,0 +1,64 @@
+name: Censorship Simulation Tests
+
+on:
+  pull_request:
+    paths:
+      - 'bridge-server/**'
+      - 'src/transport/**'
+      - 'src/traffic_shaping.rs'
+      - 'tests/censorship-sim/**'
+  push:
+    branches: [main]
+    paths:
+      - 'bridge-server/**'
+      - 'src/transport/**'
+      - 'src/traffic_shaping.rs'
+      - 'tests/censorship-sim/**'
+  workflow_dispatch:
+
+jobs:
+  censorship-sim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install bridge dependencies
+        working-directory: bridge-server
+        run: npm install --production
+
+      - name: Start bridge server
+        working-directory: bridge-server
+        run: |
+          node server-production.js --port 8080 &
+          sleep 3
+        env:
+          COVER_SITE_TITLE: "My Blog"
+
+      - name: Active prober test
+        run: node tests/censorship-sim/active-prober.js --bridge http://localhost:8080
+
+      - name: DNS leak test
+        run: node tests/censorship-sim/dns-leak.js --duration 5
+
+      - name: Start WebTunnel bridge
+        working-directory: bridge-server
+        run: |
+          WEBTUNNEL_PATH=/ws-test-secret WEBTUNNEL_PORT=8081 node server-webtunnel.js &
+          sleep 2
+
+      - name: Active prober test (WebTunnel)
+        run: node tests/censorship-sim/active-prober.js --bridge http://localhost:8081
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: censorship-sim-results
+          path: tests/censorship-sim/
+          retention-days: 30

@@ -199,31 +199,48 @@ impl Circuit {
     
     /// Receive a cell from the circuit
     pub async fn receive_cell(&mut self) -> Result<Cell> {
-        let stream = self.tls_stream.as_mut()
-            .ok_or_else(|| TorError::CircuitClosed("No TLS stream".into()))?;
-        
-        // Read cell (514 bytes)
-        let mut cell_bytes = vec![0u8; 514];
-        stream.read_exact(&mut cell_bytes).await
-            .map_err(|e| TorError::Network(format!("Failed to receive cell: {}", e)))?;
-        
-        // Parse cell
-        let mut cell = Cell::from_bytes(&cell_bytes)?;
-        
-        // For RELAY cells, apply onion decryption
-        if cell.command == CellCommand::Relay || cell.command == CellCommand::RelayEarly {
-            log::debug!("    Decrypting RELAY cell");
-            
-            // Apply backward decryption with persistent ciphers
-            // Decrypt in forward order: guard first, then middle, then exit
-            for cipher in self.backward_ciphers.iter_mut() {
-                cipher.apply_keystream(&mut cell.payload);
+        loop {
+            let stream = self.tls_stream.as_mut()
+                .ok_or_else(|| TorError::CircuitClosed("No TLS stream".into()))?;
+
+            // Read cell (514 bytes)
+            let mut cell_bytes = vec![0u8; 514];
+            stream.read_exact(&mut cell_bytes).await
+                .map_err(|e| TorError::Network(format!("Failed to receive cell: {}", e)))?;
+
+            // Parse cell
+            let mut cell = Cell::from_bytes(&cell_bytes)?;
+
+            // Silently discard Padding cells (tor-spec §7.2)
+            if cell.command == CellCommand::Padding || cell.command == CellCommand::Vpadding {
+                log::debug!("    📥 Discarding {:?} cell", cell.command);
+                continue;
             }
-            
-            log::debug!("    ✓ RELAY cell decrypted");
+
+            // DESTROY cell = circuit torn down by relay
+            if cell.command == CellCommand::Destroy {
+                let reason = if cell.payload.is_empty() { 0 } else { cell.payload[0] };
+                return Err(TorError::CircuitClosed(
+                    format!("Circuit destroyed by relay (reason: {})", reason)
+                ));
+            }
+
+            // For RELAY cells, apply per-layer onion decryption (tor-spec §5.5.2)
+            if cell.command == CellCommand::Relay || cell.command == CellCommand::RelayEarly {
+                log::debug!("    Decrypting RELAY cell (per-layer)");
+
+                for (i, cipher) in self.backward_ciphers.iter_mut().enumerate() {
+                    cipher.apply_keystream(&mut cell.payload);
+                    let recognized = u16::from_be_bytes([cell.payload[1], cell.payload[2]]);
+                    if recognized == 0 {
+                        log::debug!("    ✓ RELAY cell recognized at hop {}", i);
+                        break;
+                    }
+                }
+            }
+
+            return Ok(cell);
         }
-        
-        Ok(cell)
     }
     
     /// Extend circuit to a new relay
@@ -394,6 +411,11 @@ impl Circuit {
     pub fn hop_count(&self) -> usize {
         self.relays.len()
     }
+
+    /// Check if the circuit still has an active TLS stream to the guard
+    pub fn is_connected(&self) -> bool {
+        self.tls_stream.is_some()
+    }
     
     /// Send a RELAY cell through the circuit (with proper digest and encryption)
     /// Used for RELAY_BEGIN, RELAY_DATA, etc.
@@ -459,75 +481,98 @@ impl Circuit {
     /// Receive a RELAY cell from the circuit (with decryption)
     pub async fn receive_relay_cell(&mut self) -> Result<RelayCell> {
         log::info!("    📥 receive_relay_cell: waiting for cell...");
-        
-        let stream = self.tls_stream.as_mut()
-            .ok_or_else(|| TorError::CircuitClosed("No TLS stream".into()))?;
-        
-        // Read cell (514 bytes)
-        let mut cell_bytes = vec![0u8; 514];
-        stream.read_exact(&mut cell_bytes).await
-            .map_err(|e| TorError::Network(format!("Failed to receive cell: {}", e)))?;
-        
-        log::info!("    📥 Received {} bytes, header: {:02x?}", cell_bytes.len(), &cell_bytes[..10]);
-        
-        // Parse cell header
-        let cell = Cell::from_bytes(&cell_bytes)?;
-        log::info!("    📥 Cell: CircID={}, Cmd={:?}", cell.circuit_id, cell.command);
-        
-        // Verify it's a RELAY cell
-        if cell.command != CellCommand::Relay && cell.command != CellCommand::RelayEarly {
-            log::error!("    ❌ Expected RELAY cell, got {:?}", cell.command);
-            return Err(TorError::ProtocolError(
-                format!("Expected RELAY cell, got {:?}", cell.command)
-            ));
-        }
-        
-        // Decrypt payload with all hop ciphers in forward order (guard first)
+
+        let cell = loop {
+            let stream = self.tls_stream.as_mut()
+                .ok_or_else(|| TorError::CircuitClosed("No TLS stream".into()))?;
+
+            // Read cell (514 bytes)
+            let mut cell_bytes = vec![0u8; 514];
+            stream.read_exact(&mut cell_bytes).await
+                .map_err(|e| TorError::Network(format!("Failed to receive cell: {}", e)))?;
+
+            log::info!("    📥 Received {} bytes, header: {:02x?}", cell_bytes.len(), &cell_bytes[..10]);
+
+            // Parse cell header
+            let cell = Cell::from_bytes(&cell_bytes)?;
+            log::info!("    📥 Cell: CircID={}, Cmd={:?}", cell.circuit_id, cell.command);
+
+            // Silently discard Padding and Variable-length Padding cells (tor-spec §7.2)
+            if cell.command == CellCommand::Padding || cell.command == CellCommand::Vpadding {
+                log::debug!("    📥 Discarding {:?} cell, reading next...", cell.command);
+                continue;
+            }
+
+            // DESTROY cell = circuit torn down by relay
+            if cell.command == CellCommand::Destroy {
+                let reason = if cell.payload.is_empty() { 0 } else { cell.payload[0] };
+                return Err(TorError::CircuitClosed(
+                    format!("Circuit destroyed by relay (reason: {})", reason)
+                ));
+            }
+
+            // Verify it's a RELAY cell
+            if cell.command != CellCommand::Relay && cell.command != CellCommand::RelayEarly {
+                log::error!("    ❌ Expected RELAY cell, got {:?}", cell.command);
+                return Err(TorError::ProtocolError(
+                    format!("Expected RELAY cell, got {:?}", cell.command)
+                ));
+            }
+
+            // Found a valid RELAY cell — break out and process it
+            break cell;
+        };
+
+        // Tor spec §5.5.2: Per-layer decryption
+        // Decrypt one layer at a time, check 'recognized' (bytes 1-2) after each.
+        // This is critical because intermediate hops can send cells (e.g. DESTROY,
+        // RELAY_TRUNCATED) with fewer encryption layers than the exit relay.
         let mut payload = cell.payload.clone();
-        log::info!("    🔓 Decrypting with {} hop ciphers", self.backward_ciphers.len());
-        log::info!("    📊 Pre-decrypt header: {:02x?}", &payload[..15]);
-        
-        for cipher in self.backward_ciphers.iter_mut() {
+        log::info!("    🔓 Decrypting with {} hop ciphers (per-layer)", self.backward_ciphers.len());
+
+        let mut origin_hop: Option<usize> = None;
+        for (i, cipher) in self.backward_ciphers.iter_mut().enumerate() {
             cipher.apply_keystream(&mut payload);
+            let recognized = u16::from_be_bytes([payload[1], payload[2]]);
+            if recognized == 0 {
+                origin_hop = Some(i);
+                log::info!("    📥 Cell recognized at hop {} of {}", i, self.backward_ciphers.len());
+                break;
+            }
         }
-        
-        log::info!("    📊 Post-decrypt header: {:02x?}", &payload[..15]);
 
-        // Verify relay cell digest
-        // Per tor-spec.txt Section 6.1: the 4-byte digest field is set to 0 for
-        // hashing, then verified against the running backward digest state.
-        // Extract the received digest before zeroing it
+        if origin_hop.is_none() {
+            log::warn!("    ⚠️ No hop recognized cell (cmd byte={}), treating as corrupt", payload[0]);
+            return Err(TorError::ProtocolError("No hop recognized relay cell".into()));
+        }
+        let hop_idx = origin_hop.unwrap();
+
+        // Verify relay cell digest using the correct hop's digest state
         let received_digest = [payload[5], payload[6], payload[7], payload[8]];
-
-        // Zero out the digest field for hash computation
         let mut payload_for_hash = payload.clone();
         payload_for_hash[5] = 0;
         payload_for_hash[6] = 0;
         payload_for_hash[7] = 0;
         payload_for_hash[8] = 0;
 
-        // Update running backward digest and get the expected 4-byte prefix
-        if let Some(last_digest) = self.backward_digests.last_mut() {
+        if let Some(digest) = self.backward_digests.get_mut(hop_idx) {
             use sha1::Digest as Sha1Digest;
-            last_digest.update(&payload_for_hash);
-            let hash_output = last_digest.clone().finalize();
+            digest.update(&payload_for_hash);
+            let hash_output = digest.clone().finalize();
             let expected_digest = [hash_output[0], hash_output[1], hash_output[2], hash_output[3]];
 
             if received_digest != expected_digest {
-                // Log mismatch but continue — digest verification failures can happen
-                // during circuit extension when digest states aren't synchronized
-                log::warn!("    Relay digest mismatch: received {:02x?} expected {:02x?}",
-                    received_digest, expected_digest);
+                log::warn!("    Relay digest mismatch at hop {}: received {:02x?} expected {:02x?}",
+                    hop_idx, received_digest, expected_digest);
             } else {
-                log::debug!("    Relay digest verified: {:02x?}", received_digest);
+                log::debug!("    Relay digest verified at hop {}: {:02x?}", hop_idx, received_digest);
             }
         }
 
-        // Restore original payload for parsing
         let relay_cell = RelayCell::from_bytes(&payload)?;
-        log::info!("    ✅ Received RELAY cell: {:?} stream={} data_len={}", 
-            relay_cell.command, relay_cell.stream_id, relay_cell.data.len());
-        
+        log::info!("    ✅ Received RELAY cell: {:?} stream={} data_len={} (from hop {})",
+            relay_cell.command, relay_cell.stream_id, relay_cell.data.len(), hop_idx);
+
         Ok(relay_cell)
     }
 
@@ -544,52 +589,95 @@ impl Circuit {
     pub async fn try_receive_relay_cell(&mut self) -> Result<Option<RelayCell>> {
         use futures::future::FutureExt;
 
-        let stream = self.tls_stream.as_mut()
-            .ok_or_else(|| TorError::CircuitClosed("No TLS stream".into()))?;
+        // Loop to consume consecutive Padding cells without returning to scheduler
+        loop {
+            let stream = self.tls_stream.as_mut()
+                .ok_or_else(|| TorError::CircuitClosed("No TLS stream".into()))?;
 
-        // Check if we can read by racing against a zero timeout
-        // This allows us to yield immediately if no data is available
-        let mut cell_bytes = vec![0u8; 514];
+            let mut cell_bytes = vec![0u8; 514];
 
-        // Use select! to race between reading and a zero timeout
-        futures::select_biased! {
-            // Try to read - this will complete if data is buffered
-            result = stream.read_exact(&mut cell_bytes).fuse() => {
-                match result {
-                    Ok(()) => {
-                        // Successfully read a cell, decrypt and return it
-                        log::trace!("    📥 try_receive: got {} bytes", cell_bytes.len());
+            // Use select! to race between reading and a zero timeout
+            futures::select_biased! {
+                result = stream.read_exact(&mut cell_bytes).fuse() => {
+                    match result {
+                        Ok(()) => {
+                            log::trace!("    📥 try_receive: got {} bytes", cell_bytes.len());
 
-                        let cell = Cell::from_bytes(&cell_bytes)?;
+                            let cell = Cell::from_bytes(&cell_bytes)?;
 
-                        if cell.command != CellCommand::Relay && cell.command != CellCommand::RelayEarly {
-                            return Err(TorError::ProtocolError(
-                                format!("Expected RELAY cell, got {:?}", cell.command)
-                            ));
+                            // Silently discard Padding cells (tor-spec §7.2)
+                            if cell.command == CellCommand::Padding || cell.command == CellCommand::Vpadding {
+                                log::debug!("    📥 try_receive: discarding {:?} cell", cell.command);
+                                continue;
+                            }
+
+                            // DESTROY cell = circuit torn down by relay
+                            if cell.command == CellCommand::Destroy {
+                                let reason = if cell.payload.is_empty() { 0 } else { cell.payload[0] };
+                                return Err(TorError::CircuitClosed(
+                                    format!("Circuit destroyed by relay (reason: {})", reason)
+                                ));
+                            }
+
+                            if cell.command != CellCommand::Relay && cell.command != CellCommand::RelayEarly {
+                                return Err(TorError::ProtocolError(
+                                    format!("Expected RELAY cell, got {:?}", cell.command)
+                                ));
+                            }
+
+                            // Tor spec §5.5.2: Decrypt ONE LAYER AT A TIME
+                            // Check 'recognized' (bytes 1-2) after each layer to find
+                            // which hop originated this cell. This is critical because
+                            // intermediate hops (guard, middle) can send cells like
+                            // RELAY_TRUNCATED with fewer encryption layers.
+                            let mut payload = cell.payload.clone();
+                            let mut found_hop = false;
+
+                            for (i, cipher) in self.backward_ciphers.iter_mut().enumerate() {
+                                cipher.apply_keystream(&mut payload);
+
+                                let recognized = u16::from_be_bytes([payload[1], payload[2]]);
+                                if recognized == 0 {
+                                    // This hop's decryption produced recognized=0
+                                    // Cell is (likely) from hop i
+                                    found_hop = true;
+                                    log::trace!("    📥 try_receive: cell recognized at hop {} of {}",
+                                        i, self.backward_ciphers.len());
+                                    break;
+                                }
+                            }
+
+                            if !found_hop {
+                                // No hop recognized this cell — corrupted or from unknown source
+                                log::warn!("    ⚠️ try_receive: no hop recognized cell (cmd byte={}), discarding",
+                                    payload[0]);
+                                continue;
+                            }
+
+                            // Try to parse the relay cell
+                            match RelayCell::from_bytes(&payload) {
+                                Ok(relay_cell) => {
+                                    log::trace!("    ✅ try_receive: {:?} stream={}",
+                                        relay_cell.command, relay_cell.stream_id);
+                                    return Ok(Some(relay_cell));
+                                }
+                                Err(e) => {
+                                    // Unknown relay command but recognized was 0 —
+                                    // could be a newer command we don't support, skip it
+                                    log::warn!("    ⚠️ try_receive: unrecognized relay cmd: {}, skipping", e);
+                                    continue;
+                                }
+                            }
                         }
-
-                        // Decrypt
-                        let mut payload = cell.payload.clone();
-                        for cipher in self.backward_ciphers.iter_mut() {
-                            cipher.apply_keystream(&mut payload);
+                        Err(e) => {
+                            return Err(TorError::Network(format!("Failed to receive cell: {}", e)));
                         }
-
-                        let relay_cell = RelayCell::from_bytes(&payload)?;
-                        log::trace!("    ✅ try_receive: {:?} stream={}",
-                            relay_cell.command, relay_cell.stream_id);
-
-                        Ok(Some(relay_cell))
-                    }
-                    Err(e) => {
-                        Err(TorError::Network(format!("Failed to receive cell: {}", e)))
                     }
                 }
-            }
 
-            // Zero timeout - if read isn't immediately ready, this fires
-            _ = gloo_timers::future::TimeoutFuture::new(0).fuse() => {
-                // No data immediately available
-                Ok(None)
+                _ = gloo_timers::future::TimeoutFuture::new(0).fuse() => {
+                    return Ok(None);
+                }
             }
         }
     }

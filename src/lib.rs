@@ -49,6 +49,7 @@ pub mod cooperative;
 pub mod padding;
 pub mod congestion;
 pub mod fingerprint_defense;
+pub mod lox_client;
 // mod arti_impls; // Temporarily disabled until arti dependencies are WASM-ready
 
 // Security tests (only compiled in test mode)
@@ -57,7 +58,7 @@ mod security_tests;
 
 pub use error::{TorError, Result};
 pub use runtime::WasmRuntime;
-pub use transport::{WasmTcpStream, BridgeConfig};
+pub use transport::{WasmTcpStream, BridgeConfig, TransportStream};
 pub use storage::{
     TorStorageManager, WasmStorage, 
     ConsensusData, RelayData, CircuitData, CircuitState, ClientState, RelayFlags,
@@ -198,6 +199,9 @@ pub struct TorClient {
     
     // Rate limiter (abuse prevention)
     rate_limiter: RateLimiter,
+
+    // Circuit pool for reuse
+    circuit_pool: PrebuiltCircuitPool,
 }
 
 #[wasm_bindgen]
@@ -257,6 +261,7 @@ impl TorClient {
             circuit_builder: None,
             relay_selector: None,
             rate_limiter: RateLimiter::new(),
+            circuit_pool: PrebuiltCircuitPool::new(),
         })
     }
     
@@ -359,8 +364,18 @@ impl TorClient {
         ));
         
         self.bootstrapped = true;
+
+        // 6. Warm up circuit pool (prebuild circuits for fast first requests)
+        log::info!("🔥 Warming up circuit pool...");
+        let pool_builder = self.circuit_builder.as_ref().unwrap().clone();
+        let pool_selector = self.relay_selector.as_ref().unwrap().clone();
+        match self.circuit_pool.warm_up(&pool_builder, &pool_selector).await {
+            Ok(n) => log::info!("✅ Circuit pool warmed up ({} circuits ready)", n),
+            Err(e) => log::warn!("⚠️ Circuit pool warm-up failed: {} (will build on demand)", e),
+        }
+
         log::info!("✅ Tor client bootstrapped and ready!");
-        
+
         Ok(())
     }
     
@@ -391,6 +406,8 @@ impl TorClient {
                 "guard_count": self.guard_state.guards.len(),
                 "usable_guards": self.guard_state.usable_guard_count(),
                 "days_until_guard_rotation": days_until_guard_rotation,
+                "pool_size": self.circuit_pool.size(),
+                "pool_hits": self.circuit_pool.get_stats().pool_hits,
             })).unwrap()
         } else {
             serde_wasm_bindgen::to_value(&serde_json::json!({
@@ -841,8 +858,8 @@ impl TorClient {
             return Err(JsValue::from_str("Rate limited: too many circuit requests. Please wait."));
         }
 
-        // Build a fresh circuit (no caching for cooperative mode to avoid RefCell complexity)
-        log::info!("  🔨 Building circuit for cooperative scheduler...");
+        // Get circuit from pool or build new one
+        log::info!("  🔨 Getting circuit for cooperative scheduler...");
 
         let builder = self.circuit_builder.as_ref()
             .ok_or_else(|| JsValue::from_str("Circuit builder not initialized"))?
@@ -852,12 +869,12 @@ impl TorClient {
             .ok_or_else(|| JsValue::from_str("Relay selector not initialized"))?
             .clone();
 
-        let circuit = builder.build_circuit(&selector)
+        let circuit = self.circuit_pool.get_circuit(&builder, &selector)
             .await
-            .map_err(|e| JsValue::from_str(&format!("Circuit build failed: {}", e)))?;
+            .map_err(|e| JsValue::from_str(&format!("Circuit failed: {}", e)))?;
 
         self.rate_limiter.record_circuit_created(circuit.id);
-        log::info!("  ✅ Circuit {} built", circuit.id);
+        log::info!("  ✅ Circuit {} ready", circuit.id);
 
         // Wrap in cooperative scheduler
         let scheduler = Rc::new(RefCell::new(CooperativeCircuit::new(circuit)));
@@ -927,6 +944,14 @@ impl TorClient {
 
         log::info!("  ✅ Received {} bytes", response_bytes.len());
 
+        // Try to return circuit to pool for reuse
+        if let Ok(coop_cell) = Rc::try_unwrap(scheduler) {
+            let mut coop = coop_cell.into_inner();
+            if let Some(circuit) = coop.checkout_circuit() {
+                self.circuit_pool.return_circuit(circuit);
+            }
+        }
+
         let response_str = String::from_utf8_lossy(&response_bytes).to_string();
 
         log::info!("✅ [COOP] POST complete: {} bytes", response_str.len());
@@ -967,7 +992,7 @@ impl TorClient {
             return Err(JsValue::from_str("Rate limited: too many circuit requests. Please wait."));
         }
 
-        // Build a fresh circuit
+        // Get circuit from pool (prebuilt) or build new one
         let builder = self.circuit_builder.as_ref()
             .ok_or_else(|| JsValue::from_str("Circuit builder not initialized"))?
             .clone();
@@ -976,9 +1001,9 @@ impl TorClient {
             .ok_or_else(|| JsValue::from_str("Relay selector not initialized"))?
             .clone();
 
-        let circuit = builder.build_circuit(&selector)
+        let circuit = self.circuit_pool.get_circuit(&builder, &selector)
             .await
-            .map_err(|e| JsValue::from_str(&format!("Circuit build failed: {}", e)))?;
+            .map_err(|e| JsValue::from_str(&format!("Circuit failed: {}", e)))?;
 
         self.rate_limiter.record_circuit_created(circuit.id);
 
@@ -1026,10 +1051,116 @@ impl TorClient {
             response
         };
 
+        // Try to return circuit to pool for reuse
+        if let Ok(coop_cell) = Rc::try_unwrap(scheduler) {
+            let mut coop = coop_cell.into_inner();
+            if let Some(circuit) = coop.checkout_circuit() {
+                self.circuit_pool.return_circuit(circuit);
+            }
+        }
+
         let response_str = String::from_utf8_lossy(&response_bytes).to_string();
         log::info!("✅ [COOP] GET complete: {} bytes", response_str.len());
 
         Ok(response_str)
+    }
+
+    /// Cooperative GET that returns raw bytes (Uint8Array)
+    ///
+    /// Same as fetch_get_cooperative but returns binary data instead of a string.
+    /// This preserves binary content (images, fonts, compressed responses) that
+    /// would be corrupted by UTF-8 lossy conversion.
+    #[wasm_bindgen]
+    pub async fn fetch_get_cooperative_bytes(
+        &mut self,
+        url: String,
+    ) -> std::result::Result<js_sys::Uint8Array, JsValue> {
+        use std::rc::Rc;
+        use std::cell::RefCell;
+
+        if !self.bootstrapped {
+            return Err(JsValue::from_str("Client not bootstrapped"));
+        }
+
+        let (host, port, path, is_https) = parse_url(&url)
+            .map_err(|e| JsValue::from_str(&format!("Invalid URL: {}", e)))?;
+
+        let scheme = if is_https { "HTTPS" } else { "HTTP" };
+        log::info!("🌐 [COOP-BIN] GET {} via Tor ({})...", url, scheme);
+
+        if !self.rate_limiter.can_create_circuit() {
+            return Err(JsValue::from_str("Rate limited: too many circuit requests. Please wait."));
+        }
+
+        // Get circuit from pool (prebuilt) or build new one
+        let builder = self.circuit_builder.as_ref()
+            .ok_or_else(|| JsValue::from_str("Circuit builder not initialized"))?
+            .clone();
+
+        let selector = self.relay_selector.as_ref()
+            .ok_or_else(|| JsValue::from_str("Relay selector not initialized"))?
+            .clone();
+
+        let circuit = self.circuit_pool.get_circuit(&builder, &selector)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Circuit failed: {}", e)))?;
+
+        self.rate_limiter.record_circuit_created(circuit.id);
+
+        let scheduler = Rc::new(RefCell::new(CooperativeCircuit::new(circuit)));
+
+        let stream = open_cooperative_stream(&scheduler, &host, port)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Stream open failed: {}", e)))?;
+
+        let http_request = format!(
+            "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0\r\n\r\n",
+            path, host
+        );
+
+        let response_bytes = if is_https {
+            let mut tls_stream = CooperativeTlsStream::new(stream, &host)
+                .await
+                .map_err(|e| JsValue::from_str(&format!("TLS handshake failed: {}", e)))?;
+
+            tls_stream.write_all(http_request.as_bytes())
+                .await
+                .map_err(|e| JsValue::from_str(&format!("Failed to send request: {}", e)))?;
+
+            let response = tls_stream.read_to_end()
+                .await
+                .map_err(|e| JsValue::from_str(&format!("Failed to receive response: {}", e)))?;
+
+            let _ = tls_stream.close().await;
+            response
+        } else {
+            let mut stream = stream;
+
+            stream.write_all(http_request.as_bytes())
+                .await
+                .map_err(|e| JsValue::from_str(&format!("Failed to send request: {}", e)))?;
+
+            let response = stream.read_to_end()
+                .await
+                .map_err(|e| JsValue::from_str(&format!("Failed to receive response: {}", e)))?;
+
+            let _ = stream.close().await;
+            response
+        };
+
+        // Try to return circuit to pool for reuse
+        if let Ok(coop_cell) = Rc::try_unwrap(scheduler) {
+            let mut coop = coop_cell.into_inner();
+            if let Some(circuit) = coop.checkout_circuit() {
+                self.circuit_pool.return_circuit(circuit);
+            }
+        }
+
+        log::info!("✅ [COOP-BIN] GET complete: {} bytes", response_bytes.len());
+
+        let arr = js_sys::Uint8Array::new_with_length(response_bytes.len() as u32);
+        arr.copy_from(&response_bytes);
+        Ok(arr)
     }
 
     /// Get number of cached circuits
@@ -1087,9 +1218,23 @@ impl TorClient {
     #[wasm_bindgen]
     pub fn clear_circuits(&mut self) {
         self.circuit_cache.clear();
+        self.circuit_pool.clear();
         log::info!("🗑️ All cached circuits cleared");
     }
     
+    /// Get circuit pool statistics
+    #[wasm_bindgen]
+    pub fn pool_stats(&self) -> JsValue {
+        let stats = self.circuit_pool.get_stats();
+        serde_wasm_bindgen::to_value(&serde_json::json!({
+            "pool_size": stats.current_pool_size,
+            "hits": stats.pool_hits,
+            "misses": stats.pool_misses,
+            "circuits_built": stats.circuits_built,
+            "circuits_expired": stats.circuits_expired,
+        })).unwrap_or(JsValue::NULL)
+    }
+
     /// Get circuit cache statistics
     #[wasm_bindgen]
     pub fn get_circuit_stats(&self) -> JsValue {

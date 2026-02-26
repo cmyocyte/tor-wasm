@@ -1,0 +1,22 @@
+name = "tor-wasm-bridge"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# Durable Objects for persistent meek sessions
+[durable_objects]
+bindings = [
+  { name = "MEEK_SESSION", class_name = "MeekSession" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["MeekSession"]
+
+# Environment variables (set via `wrangler secret put`)
+# TOR_GUARD_HOST  — Tor guard relay hostname
+# TOR_GUARD_PORT  — Tor guard relay port (usually 443)
+# APP_SECRET      — Optional secret for ?v= parameter (if empty, ?v=1 works)
+# HEALTH_TOKEN    — Token for authenticated health checks
+
+[vars]
+COVER_TITLE = "Alex's Blog"

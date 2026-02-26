@@ -1,0 +1,60 @@
+{
+  "lang": "zh",
+  "dir": "ltr",
+  "brand": "\u9690\u79c1\u6d4f\u89c8\u5668",
+  "tagline": "\u60a8\u7684\u6d41\u91cf\u7ecf\u8fc7 3 \u4e2a\u52a0\u5bc6\u4e2d\u7ee7\u8282\u70b9\u8f6c\u53d1",
+  "boot": {
+    "init": "\u52a0\u8f7d\u52a0\u5bc6\u6a21\u5757",
+    "defense": "\u5e94\u7528\u6307\u7eb9\u9632\u62a4",
+    "bridge": "\u8fde\u63a5\u7f51\u6865\u670d\u52a1\u5668",
+    "circuit": "\u901a\u8fc7 Tor \u6784\u5efa\u52a0\u5bc6\u7ebf\u8def"
+  },
+  "status": {
+    "connecting": "\u8fde\u63a5\u4e2d...",
+    "ready": "\u5c31\u7eea",
+    "failed": "\u8fde\u63a5\u5931\u8d25",
+    "retrying": "\u91cd\u8bd5\u4e2d...",
+    "redirecting": "\u8df3\u8f6c\u4e2d...",
+    "newIdentity": "\u65b0\u8eab\u4efd...",
+    "identityFailed": "\u5931\u8d25"
+  },
+  "loading": {
+    "resources": "\u52a0\u8f7d\u4e2d {completed}/{total}",
+    "done": "\u5df2\u52a0\u8f7d {completed}\uff0c\u5df2\u62e6\u622a {blocked} \u4e2a\u8ddf\u8e2a\u5668",
+    "doneNoBlock": "\u5df2\u52a0\u8f7d {completed} \u4e2a\u8d44\u6e90"
+  },
+  "error": {
+    "connectionFailed": "\u65e0\u6cd5\u8fde\u63a5\u3002\u8bf7\u7a0d\u540e\u518d\u8bd5\u3002",
+    "pageFailed": "\u65e0\u6cd5\u52a0\u8f7d\u9875\u9762",
+    "pageFailedDetail": "\u591a\u6b21\u5c1d\u8bd5\u540e\u8fde\u63a5\u5931\u8d25\u3002\u8bf7\u70b9\u51fb\u91cd\u65b0\u52a0\u8f7d\u3002"
+  },
+  "bridges": {
+    "heading": "\u7f51\u6865",
+    "empty": "\u672a\u914d\u7f6e\u81ea\u5b9a\u4e49\u7f51\u6865",
+    "placeholder": "\u7c98\u8d34\u7f51\u6865\u5730\u5740\u3001JSON \u914d\u7f6e\u6216\u626b\u63cf QR \u7801...",
+    "add": "\u6dfb\u52a0\u7f51\u6865",
+    "scanQr": "\u626b\u63cf QR",
+    "added": "\u7f51\u6865\u5df2\u6dfb\u52a0",
+    "invalid": "\u65e0\u6cd5\u89e3\u6790\u7f51\u6865\u914d\u7f6e",
+    "deleted": "\u7f51\u6865\u5df2\u5220\u9664",
+    "duplicate": "\u7f51\u6865\u5df2\u5b58\u5728",
+    "testing": "\u6d4b\u8bd5\u8fde\u63a5\u4e2d...",
+    "reachable": "\u53ef\u8fbe",
+    "unreachable": "\u4e0d\u53ef\u8fbe"
+  },
+  "share": {
+    "title": "\u9690\u79c1\u6d4f\u89c8\u5668",
+    "text": "\u901a\u8fc7\u52a0\u5bc6\u7684 Tor \u8def\u7531\u81ea\u7531\u6d4f\u89c8",
+    "copied": "\u94fe\u63a5\u5df2\u590d\u5236!"
+  },
+  "ui": {
+    "urlPlaceholder": "\u8f93\u5165\u7f51\u5740\u6216\u641c\u7d22...",
+    "reload": "\u91cd\u65b0\u52a0\u8f7d",
+    "back": "\u540e\u9000",
+    "forward": "\u524d\u8fdb",
+    "newIdentity": "\u65b0\u8eab\u4efd",
+    "settings": "\u8bbe\u7f6e",
+    "share": "\u5206\u4eab",
+    "close": "\u5173\u95ed"
+  }
+}
