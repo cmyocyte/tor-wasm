@@ -35,13 +35,13 @@ let html = fs.readFileSync(APP_HTML_PATH, 'utf-8');
 // Rewrite WASM import path: ../pkg/ -> /pkg/ (served by Worker)
 html = html.replace(
   `from '../pkg/tor_wasm.js'`,
-  `from './pkg/tor_wasm.js'`
+  `from '/pkg/tor_wasm.js'`
 );
 
 // Fix manifest path for Worker-served route
 html = html.replace(
   `<link rel="manifest" href="manifest.json">`,
-  `<link rel="manifest" href="./manifest.json">`
+  `<link rel="manifest" href="/manifest.json">`
 );
 
 // Escape backticks and ${} for template literal embedding
@@ -53,14 +53,14 @@ const escaped = html
 // Read the Worker source
 let workerSrc = fs.readFileSync(WORKER_SRC, 'utf-8');
 
-// Replace serveApp() with embedded HTML
+// Replace serveApp() with embedded HTML — use no-store to prevent caching issues
 const serveAppRegex = /function serveApp\(env: Env\): Response \{[\s\S]*?^}/m;
 const newServeApp = `function serveApp(env: Env): Response {
   const html = \`${escaped}\`;
 
   return new Response(html, {
     status: 200,
-    headers: coverHeaders(),
+    headers: { ...coverHeaders(), 'cache-control': 'no-store' },
   });
 }`;
 
@@ -73,18 +73,22 @@ workerSrc = workerSrc.replace(serveAppRegex, newServeApp);
 
 // Read all assets
 const manifest = fs.readFileSync(MANIFEST_PATH, 'utf-8');
-const sw = fs.readFileSync(SW_PATH, 'utf-8');
+let sw = fs.readFileSync(SW_PATH, 'utf-8');
 const wasmJs = fs.readFileSync(WASM_JS_PATH, 'utf-8');
 const wasmBin = fs.readFileSync(WASM_BIN_PATH);
 const wasmB64 = wasmBin.toString('base64');
 
-// The WASM JS glue imports the .wasm file — rewrite to use inline base64
-// wasm-pack generates: input = new URL('tor_wasm_bg.wasm', import.meta.url);
-// We replace the fetch with a base64 decode
-let patchedWasmJs = wasmJs;
+// Patch SW: fix asset paths for Worker (../pkg/ -> /pkg/)
+// and bump cache version to invalidate stale caches
+sw = sw.replace(`'../pkg/tor_wasm.js'`, `'/pkg/tor_wasm.js'`);
+sw = sw.replace(`'../pkg/tor_wasm_bg.wasm'`, `'/pkg/tor_wasm_bg.wasm'`);
+sw = sw.replace(`'./'`, `'/'`);
+sw = sw.replace(`'./index.html'`, `'/?v=1'`);
+sw = sw.replace(`'./manifest.json'`, `'/manifest.json'`);
+sw = sw.replace(/const CACHE = '[^']+';/, `const CACHE = 'worker-v1';`);
 
 // Escape for embedding as a string
-const wasmJsEscaped = patchedWasmJs
+const wasmJsEscaped = wasmJs
   .replace(/\\/g, '\\\\')
   .replace(/`/g, '\\`')
   .replace(/\$\{/g, '\\${');
@@ -99,16 +103,16 @@ const routeInsert = `
     }
     if (url.pathname === '/sw.js') {
       return new Response(${JSON.stringify(sw)}, {
-        headers: { ...coverHeaders('application/javascript'), 'service-worker-allowed': '/' },
+        headers: { ...coverHeaders('application/javascript'), 'service-worker-allowed': '/', 'cache-control': 'no-store' },
       });
     }
-    if (url.pathname === '/pkg/tor_wasm.js' || url.pathname === './pkg/tor_wasm.js') {
+    if (url.pathname === '/pkg/tor_wasm.js') {
       const js = \`${wasmJsEscaped}\`;
       return new Response(js, {
         headers: { ...coverHeaders('application/javascript'), 'cache-control': 'public, max-age=86400' },
       });
     }
-    if (url.pathname === '/pkg/tor_wasm_bg.wasm' || url.pathname === './pkg/tor_wasm_bg.wasm') {
+    if (url.pathname === '/pkg/tor_wasm_bg.wasm') {
       const wasmBytes = Uint8Array.from(atob("${wasmB64}"), c => c.charCodeAt(0));
       return new Response(wasmBytes, {
         headers: { ...coverHeaders('application/wasm'), 'cache-control': 'public, max-age=86400' },
@@ -127,7 +131,7 @@ fs.writeFileSync(WORKER_SRC, workerSrc);
 console.log('Build complete:');
 console.log(`  - app/index.html:        ${(html.length / 1024).toFixed(1)} KB`);
 console.log(`  - app/manifest.json:     ${(manifest.length / 1024).toFixed(1)} KB`);
-console.log(`  - app/sw.js:             ${(sw.length / 1024).toFixed(1)} KB`);
+console.log(`  - app/sw.js:             ${(sw.length / 1024).toFixed(1)} KB (paths patched)`);
 console.log(`  - pkg/tor_wasm.js:       ${(wasmJs.length / 1024).toFixed(1)} KB`);
 console.log(`  - pkg/tor_wasm_bg.wasm:  ${(wasmBin.length / 1024).toFixed(1)} KB (${(wasmB64.length / 1024).toFixed(1)} KB base64)`);
 console.log(`  - Total embedded:        ${((html.length + manifest.length + sw.length + wasmJs.length + wasmB64.length) / 1024).toFixed(1)} KB`);
