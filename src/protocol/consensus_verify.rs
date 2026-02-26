@@ -14,7 +14,7 @@
 
 use crate::error::{Result, TorError};
 use sha1::Sha1 as Sha1Hasher;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 /// Tor directory authority information
@@ -96,25 +96,25 @@ impl ConsensusVerifier {
     /// Create a new verifier with hardcoded authorities
     pub fn new() -> Self {
         let mut authorities = HashMap::new();
-        
+
         for auth in DIRECTORY_AUTHORITIES {
             // Normalize fingerprint (uppercase, no spaces)
             let fingerprint = auth.v3ident.to_uppercase().replace(" ", "");
             authorities.insert(fingerprint, auth.clone());
         }
-        
+
         Self { authorities }
     }
-    
+
     /// Parse signatures from a consensus document
     pub fn parse_signatures(&self, consensus_text: &str) -> Vec<DirectorySignature> {
         let mut signatures = Vec::new();
         let lines: Vec<&str> = consensus_text.lines().collect();
         let mut i = 0;
-        
+
         while i < lines.len() {
             let line = lines[i].trim();
-            
+
             // Look for directory-signature lines
             if line.starts_with("directory-signature") {
                 if let Some(sig) = self.parse_signature_block(&lines, &mut i) {
@@ -123,34 +123,42 @@ impl ConsensusVerifier {
             }
             i += 1;
         }
-        
+
         signatures
     }
-    
+
     /// Parse a single signature block
     fn parse_signature_block(&self, lines: &[&str], i: &mut usize) -> Option<DirectorySignature> {
         let header = lines[*i].trim();
         let parts: Vec<&str> = header.split_whitespace().collect();
-        
+
         // Format: directory-signature [algorithm] identity signing-key-digest
         let (algorithm, identity, signing_key_digest) = if parts.len() == 3 {
             // Old format without algorithm
-            ("sha1".to_string(), parts[1].to_string(), parts[2].to_string())
+            (
+                "sha1".to_string(),
+                parts[1].to_string(),
+                parts[2].to_string(),
+            )
         } else if parts.len() >= 4 {
             // New format with algorithm
-            (parts[1].to_string(), parts[2].to_string(), parts[3].to_string())
+            (
+                parts[1].to_string(),
+                parts[2].to_string(),
+                parts[3].to_string(),
+            )
         } else {
             return None;
         };
-        
+
         // Find the signature block
         *i += 1;
         let mut signature_data = String::new();
         let mut in_signature = false;
-        
+
         while *i < lines.len() {
             let line = lines[*i].trim();
-            
+
             if line == "-----BEGIN SIGNATURE-----" {
                 in_signature = true;
             } else if line == "-----END SIGNATURE-----" {
@@ -162,16 +170,15 @@ impl ConsensusVerifier {
                 *i -= 1;
                 break;
             }
-            
+
             *i += 1;
         }
-        
+
         // Decode base64 signature
-        let signature = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            &signature_data
-        ).ok()?;
-        
+        let signature =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &signature_data)
+                .ok()?;
+
         Some(DirectorySignature {
             algorithm,
             identity,
@@ -179,13 +186,17 @@ impl ConsensusVerifier {
             signature,
         })
     }
-    
+
     /// Compute the digest of the signed portion of the consensus.
     ///
     /// The signed portion is everything from the start of the document up to
     /// and including the `directory-signature` header line (but NOT the
     /// signature block itself). Per dir-spec.txt Section 3.4.1.
-    pub fn compute_consensus_digest(&self, consensus_text: &str, algorithm: &str) -> Option<Vec<u8>> {
+    pub fn compute_consensus_digest(
+        &self,
+        consensus_text: &str,
+        algorithm: &str,
+    ) -> Option<Vec<u8>> {
         // Find the first "directory-signature" line
         let signed_end = consensus_text.find("\ndirectory-signature ")?;
         // Include the newline before "directory-signature"
@@ -250,13 +261,18 @@ impl ConsensusVerifier {
 
         if sha256_digest.is_none() && sha1_digest.is_none() {
             return Err(TorError::ConsensusError(
-                "Cannot compute consensus digest — no directory-signature found".into()
+                "Cannot compute consensus digest — no directory-signature found".into(),
             ));
         }
 
         if let Some(ref d) = sha256_digest {
-            log::info!("  Consensus SHA-256: {:02x}{:02x}{:02x}{:02x}...",
-                d[0], d[1], d[2], d[3]);
+            log::info!(
+                "  Consensus SHA-256: {:02x}{:02x}{:02x}{:02x}...",
+                d[0],
+                d[1],
+                d[2],
+                d[3]
+            );
         }
 
         // Step 2: Parse all signatures
@@ -265,7 +281,7 @@ impl ConsensusVerifier {
 
         if signatures.is_empty() {
             return Err(TorError::ConsensusError(
-                "No signatures found in consensus document".into()
+                "No signatures found in consensus document".into(),
             ));
         }
 
@@ -280,30 +296,46 @@ impl ConsensusVerifier {
             let auth = match self.authorities.get(&identity) {
                 Some(a) => a,
                 None => {
-                    log::debug!("  Unknown signer: {}...", &identity[..16.min(identity.len())]);
+                    log::debug!(
+                        "  Unknown signer: {}...",
+                        &identity[..16.min(identity.len())]
+                    );
                     continue;
                 }
             };
 
             // Validate signature format (catches trivial forgeries)
             if !Self::validate_signature_format(&sig.signature) {
-                log::warn!("  {} signature has invalid format ({} bytes, rejected)",
-                    auth.name, sig.signature.len());
+                log::warn!(
+                    "  {} signature has invalid format ({} bytes, rejected)",
+                    auth.name,
+                    sig.signature.len()
+                );
                 continue;
             }
 
             // Signature passes structural + format validation
-            log::info!("  Verified authority: {} (algo={}, sig_len={})",
-                auth.name, sig.algorithm, sig.signature.len());
+            log::info!(
+                "  Verified authority: {} (algo={}, sig_len={})",
+                auth.name,
+                sig.algorithm,
+                sig.signature.len()
+            );
             verified_authorities.push(auth.name.to_string());
             authority_signatures += 1;
         }
 
-        log::info!("  Authority signatures: {}/{}",
-                   authority_signatures, MIN_AUTHORITY_SIGNATURES);
+        log::info!(
+            "  Authority signatures: {}/{}",
+            authority_signatures,
+            MIN_AUTHORITY_SIGNATURES
+        );
 
         if authority_signatures >= MIN_AUTHORITY_SIGNATURES {
-            log::info!("  Consensus verification passed! Authorities: {:?}", verified_authorities);
+            log::info!(
+                "  Consensus verification passed! Authorities: {:?}",
+                verified_authorities
+            );
             Ok(authority_signatures)
         } else {
             Err(TorError::ConsensusError(format!(
@@ -332,33 +364,34 @@ impl ConsensusVerifier {
         };
 
         // Parse the public key
-        let public_key = signature::UnparsedPublicKey::new(
-            verify_algo,
-            signing_key_der,
-        );
+        let public_key = signature::UnparsedPublicKey::new(verify_algo, signing_key_der);
 
         // The RSA signature is over the hash of the signed portion
         // But ring's verify() expects the message, not the hash, and computes the hash internally.
         // For Tor's consensus, the signature is directly over the hash (PKCS#1 v1.5).
         // So we pass the signed portion as the "message" for ring to hash and verify.
-        let signed_end = consensus_text.find("\ndirectory-signature ")
+        let signed_end = consensus_text
+            .find("\ndirectory-signature ")
             .ok_or_else(|| TorError::ConsensusError("No directory-signature found".into()))?;
         let signed_portion = &consensus_text[..signed_end + 1];
 
-        public_key.verify(signed_portion.as_bytes(), &sig.signature)
-            .map_err(|_| TorError::ConsensusError(format!(
-                "RSA signature verification failed for authority {}",
-                sig.identity
-            )))?;
+        public_key
+            .verify(signed_portion.as_bytes(), &sig.signature)
+            .map_err(|_| {
+                TorError::ConsensusError(format!(
+                    "RSA signature verification failed for authority {}",
+                    sig.identity
+                ))
+            })?;
 
         Ok(())
     }
-    
+
     /// Quick check: just verify we have enough authority signatures present
     /// (without full cryptographic verification)
     pub fn quick_verify(&self, consensus_text: &str) -> Result<usize> {
         let signatures = self.parse_signatures(consensus_text);
-        
+
         let mut authority_count = 0;
         for sig in &signatures {
             let identity = sig.identity.to_uppercase().replace(" ", "");
@@ -366,7 +399,7 @@ impl ConsensusVerifier {
                 authority_count += 1;
             }
         }
-        
+
         if authority_count >= MIN_AUTHORITY_SIGNATURES {
             Ok(authority_count)
         } else {
@@ -376,13 +409,13 @@ impl ConsensusVerifier {
             )))
         }
     }
-    
+
     /// Check if a fingerprint belongs to a known directory authority
     pub fn is_authority(&self, fingerprint: &str) -> bool {
         let normalized = fingerprint.to_uppercase().replace(" ", "");
         self.authorities.contains_key(&normalized)
     }
-    
+
     /// Get authority by fingerprint
     pub fn get_authority(&self, fingerprint: &str) -> Option<&DirectoryAuthority> {
         let normalized = fingerprint.to_uppercase().replace(" ", "");
@@ -401,25 +434,25 @@ impl Default for ConsensusVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_authority_lookup() {
         let verifier = ConsensusVerifier::new();
-        
+
         // Test known authority
         assert!(verifier.is_authority("D586D18309DED4CD6D57C18FDB97EFA96D330566"));
         assert!(verifier.is_authority("d586d18309ded4cd6d57c18fdb97efa96d330566")); // lowercase
-        
+
         // Test unknown
         assert!(!verifier.is_authority("0000000000000000000000000000000000000000"));
     }
-    
+
     #[test]
     fn test_authority_count() {
         assert_eq!(DIRECTORY_AUTHORITIES.len(), 9);
         assert!(MIN_AUTHORITY_SIGNATURES <= DIRECTORY_AUTHORITIES.len());
     }
-    
+
     #[test]
     fn test_parse_signature() {
         let consensus = r#"
@@ -434,13 +467,12 @@ directory-signature sha256 14C131DFC5C6F93646BE72FA1401C02A8DF2E8B4 FEDCBA4321
 dGVzdDI=
 -----END SIGNATURE-----
 "#;
-        
+
         let verifier = ConsensusVerifier::new();
         let sigs = verifier.parse_signatures(consensus);
-        
+
         assert_eq!(sigs.len(), 2);
         assert_eq!(sigs[0].algorithm, "sha256");
         assert_eq!(sigs[0].identity, "D586D18309DED4CD6D57C18FDB97EFA96D330566");
     }
 }
-

@@ -3,11 +3,11 @@
 //! Reduces performance.now() precision to 100ms (matches Tor Browser),
 //! fixes performance.memory to constant values, and rounds entry durations.
 
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
-use js_sys::{Array, Object, Reflect, Function};
 use super::profile::NormalizedProfile;
 use super::proxy_helpers;
+use js_sys::{Array, Function, Object, Reflect};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 pub fn apply() -> Result<(), JsValue> {
     let global = js_sys::global();
@@ -29,12 +29,15 @@ pub fn apply_to_performance(performance: &JsValue) -> Result<(), JsValue> {
     let orig_fn = orig_now.clone();
     let perf_ref = performance.clone();
 
-    let apply_trap = Closure::wrap(Box::new(move |_target: JsValue, _this_arg: JsValue, _args: JsValue| -> Result<JsValue, JsValue> {
-        let result = proxy_helpers::call_function(&orig_fn, &perf_ref, &Array::new().into())?;
-        let val = result.as_f64().unwrap_or(0.0);
-        let rounded = (val / precision).round() * precision;
-        Ok(JsValue::from_f64(rounded))
-    }) as Box<dyn FnMut(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>);
+    let apply_trap = Closure::wrap(Box::new(
+        move |_target: JsValue, _this_arg: JsValue, _args: JsValue| -> Result<JsValue, JsValue> {
+            let result = proxy_helpers::call_function(&orig_fn, &perf_ref, &Array::new().into())?;
+            let val = result.as_f64().unwrap_or(0.0);
+            let rounded = (val / precision).round() * precision;
+            Ok(JsValue::from_f64(rounded))
+        },
+    )
+        as Box<dyn FnMut(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>);
 
     let proxied = proxy_helpers::proxy_function_with_apply(&orig_now, apply_trap)?;
     Reflect::set(performance, &JsValue::from_str("now"), &proxied)?;
@@ -44,9 +47,8 @@ pub fn apply_to_performance(performance: &JsValue) -> Result<(), JsValue> {
     if let Ok(to) = time_origin {
         if !to.is_undefined() {
             let rounded = (to.as_f64().unwrap_or(0.0) / precision).round() * precision;
-            let getter = Closure::wrap(Box::new(move || -> JsValue {
-                JsValue::from_f64(rounded)
-            }) as Box<dyn FnMut() -> JsValue>);
+            let getter = Closure::wrap(Box::new(move || -> JsValue { JsValue::from_f64(rounded) })
+                as Box<dyn FnMut() -> JsValue>);
             proxy_helpers::patch_getter(performance, "timeOrigin", getter)?;
         }
     }
@@ -58,9 +60,21 @@ pub fn apply_to_performance(performance: &JsValue) -> Result<(), JsValue> {
     if has_memory {
         let getter = Closure::wrap(Box::new(|| -> JsValue {
             let obj = Object::new();
-            let _ = Reflect::set(&obj, &JsValue::from_str("totalJSHeapSize"), &JsValue::from_f64(50.0 * 1024.0 * 1024.0));
-            let _ = Reflect::set(&obj, &JsValue::from_str("usedJSHeapSize"), &JsValue::from_f64(25.0 * 1024.0 * 1024.0));
-            let _ = Reflect::set(&obj, &JsValue::from_str("jsHeapSizeLimit"), &JsValue::from_f64(2.0 * 1024.0 * 1024.0 * 1024.0));
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("totalJSHeapSize"),
+                &JsValue::from_f64(50.0 * 1024.0 * 1024.0),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("usedJSHeapSize"),
+                &JsValue::from_f64(25.0 * 1024.0 * 1024.0),
+            );
+            let _ = Reflect::set(
+                &obj,
+                &JsValue::from_str("jsHeapSizeLimit"),
+                &JsValue::from_f64(2.0 * 1024.0 * 1024.0 * 1024.0),
+            );
             obj.into()
         }) as Box<dyn FnMut() -> JsValue>);
         proxy_helpers::patch_getter(performance, "memory", getter)?;
@@ -76,26 +90,34 @@ pub fn apply_to_performance(performance: &JsValue) -> Result<(), JsValue> {
             let orig_fn = orig.clone();
             let perf_ref = performance.clone();
 
-            let apply_trap = Closure::wrap(Box::new(move |_target: JsValue, _this_arg: JsValue, args: JsValue| -> Result<JsValue, JsValue> {
-                let result = proxy_helpers::call_function(&orig_fn, &perf_ref, &args)?;
-                // Round timing fields on each entry via inline JS for efficiency
-                let round_code = format!(
-                    "(function(entries, prec) {{ \
-                        return Array.from(entries).map(function(e) {{ \
-                            return new Proxy(e, {{ get: function(t, p) {{ \
+            let apply_trap = Closure::wrap(Box::new(
+                move |_target: JsValue,
+                      _this_arg: JsValue,
+                      args: JsValue|
+                      -> Result<JsValue, JsValue> {
+                    let result = proxy_helpers::call_function(&orig_fn, &perf_ref, &args)?;
+                    // Round timing fields on each entry via inline JS for efficiency
+                    let round_code = "(function(entries, prec) { \
+                        return Array.from(entries).map(function(e) { \
+                            return new Proxy(e, { get: function(t, p) { \
                                 var v = t[p]; \
                                 if (typeof v === 'number' && \
                                     (p === 'startTime' || p === 'duration' || p === 'fetchStart' || \
                                      p === 'responseEnd' || p === 'domComplete' || p === 'loadEventEnd')) \
                                     return Math.round(v / prec) * prec; \
                                 return typeof v === 'function' ? v.bind(t) : v; \
-                            }}}}); \
-                        }}); \
-                    }})"
-                );
-                let round_fn: Function = js_sys::eval(&round_code)?.unchecked_into();
-                Reflect::apply(&round_fn, &JsValue::UNDEFINED, &Array::of2(&result, &JsValue::from_f64(precision)))
-            }) as Box<dyn FnMut(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>);
+                            }}); \
+                        }); \
+                    })".to_string();
+                    let round_fn: Function = js_sys::eval(&round_code)?.unchecked_into();
+                    Reflect::apply(
+                        &round_fn,
+                        &JsValue::UNDEFINED,
+                        &Array::of2(&result, &JsValue::from_f64(precision)),
+                    )
+                },
+            )
+                as Box<dyn FnMut(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>);
 
             let proxied = proxy_helpers::proxy_function_with_apply(&orig, apply_trap)?;
             Reflect::set(performance, &JsValue::from_str(method_name), &proxied)?;

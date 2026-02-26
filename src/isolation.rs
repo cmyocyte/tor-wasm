@@ -11,10 +11,10 @@
 //!
 //! With isolation, each domain gets its own circuit, preventing this attack.
 
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use crate::protocol::Circuit;
 
@@ -25,15 +25,15 @@ pub enum IsolationType {
     /// This is the default and recommended setting
     #[default]
     PerDomain,
-    
+
     /// One circuit per (domain, port) pair
     /// More paranoid - different ports are isolated
     PerDestination,
-    
+
     /// New circuit for every request (most paranoid)
     /// Warning: Very slow, only use for highly sensitive operations
     PerRequest,
-    
+
     /// Single circuit for all requests (no isolation)
     /// Warning: NOT RECOMMENDED - allows correlation attacks
     None,
@@ -44,13 +44,13 @@ pub enum IsolationType {
 pub struct IsolationConfig {
     /// The isolation policy to use
     pub policy: IsolationType,
-    
+
     /// Maximum age of a circuit before forced rotation (default: 10 minutes)
     pub max_circuit_age: Duration,
-    
+
     /// Maximum number of requests per circuit before rotation (default: 100)
     pub max_requests_per_circuit: u32,
-    
+
     /// Maximum number of cached circuits (default: 10)
     pub max_cached_circuits: usize,
 }
@@ -74,7 +74,7 @@ impl IsolationConfig {
             ..Default::default()
         }
     }
-    
+
     /// Create a relaxed configuration (single circuit for all)
     /// WARNING: Not recommended for security-sensitive applications
     pub fn relaxed() -> Self {
@@ -115,10 +115,10 @@ impl IsolationKey {
                 "global".to_string()
             }
         };
-        
+
         Self { key }
     }
-    
+
     /// Get the key string
     pub fn as_str(&self) -> &str {
         &self.key
@@ -129,13 +129,13 @@ impl IsolationKey {
 struct CachedCircuit {
     /// The circuit itself (wrapped for shared access)
     circuit: Rc<RefCell<Circuit>>,
-    
+
     /// When this circuit was created
     created_at: Instant,
-    
+
     /// Number of requests made on this circuit
     request_count: u32,
-    
+
     /// The isolation key for this circuit
     isolation_key: IsolationKey,
 }
@@ -149,26 +149,30 @@ impl CachedCircuit {
             isolation_key: key,
         }
     }
-    
+
     /// Check if this circuit should be retired
     fn should_retire(&self, config: &IsolationConfig) -> bool {
         // Check age
         if self.created_at.elapsed() > config.max_circuit_age {
-            log::info!("  🔄 Circuit aged out ({}s old)", 
-                self.created_at.elapsed().as_secs());
+            log::info!(
+                "  🔄 Circuit aged out ({}s old)",
+                self.created_at.elapsed().as_secs()
+            );
             return true;
         }
-        
+
         // Check request count
         if self.request_count >= config.max_requests_per_circuit {
-            log::info!("  🔄 Circuit at request limit ({} requests)", 
-                self.request_count);
+            log::info!(
+                "  🔄 Circuit at request limit ({} requests)",
+                self.request_count
+            );
             return true;
         }
-        
+
         false
     }
-    
+
     /// Increment request count
     fn increment_requests(&mut self) {
         self.request_count += 1;
@@ -179,10 +183,10 @@ impl CachedCircuit {
 pub struct CircuitCache {
     /// Configuration
     config: IsolationConfig,
-    
+
     /// Cached circuits by isolation key
     circuits: HashMap<String, CachedCircuit>,
-    
+
     /// Order of circuit insertion (for LRU eviction)
     insertion_order: Vec<String>,
 }
@@ -196,21 +200,21 @@ impl CircuitCache {
             insertion_order: Vec::new(),
         }
     }
-    
+
     /// Get the isolation policy
     pub fn policy(&self) -> IsolationType {
         self.config.policy
     }
-    
+
     /// Create an isolation key for a destination
     pub fn isolation_key(&self, host: &str, port: u16) -> IsolationKey {
         IsolationKey::for_destination(host, port, self.config.policy)
     }
-    
+
     /// Get a circuit for the given isolation key, if one exists and is valid
     pub fn get(&mut self, key: &IsolationKey) -> Option<Rc<RefCell<Circuit>>> {
         let key_str = key.as_str();
-        
+
         // Check if we have a circuit for this key
         if let Some(cached) = self.circuits.get_mut(key_str) {
             // Check if it should be retired
@@ -219,48 +223,54 @@ impl CircuitCache {
                 self.remove(key);
                 return None;
             }
-            
+
             // Increment request count
             cached.increment_requests();
-            
-            log::info!("  ✅ Reusing circuit for '{}' (request #{})", 
-                key_str, cached.request_count);
-            
+
+            log::info!(
+                "  ✅ Reusing circuit for '{}' (request #{})",
+                key_str,
+                cached.request_count
+            );
+
             return Some(Rc::clone(&cached.circuit));
         }
-        
+
         None
     }
-    
+
     /// Store a circuit for the given isolation key
     pub fn store(&mut self, key: IsolationKey, circuit: Circuit) -> Rc<RefCell<Circuit>> {
         let key_str = key.as_str().to_string();
-        
+
         // Evict old circuits if at capacity
         while self.circuits.len() >= self.config.max_cached_circuits {
             self.evict_oldest();
         }
-        
+
         // Store the circuit
         let cached = CachedCircuit::new(circuit, key.clone());
         let circuit_rc = Rc::clone(&cached.circuit);
-        
+
         self.circuits.insert(key_str.clone(), cached);
         self.insertion_order.push(key_str.clone());
-        
-        log::info!("  📦 Cached circuit for '{}' (total: {})", 
-            key_str, self.circuits.len());
-        
+
+        log::info!(
+            "  📦 Cached circuit for '{}' (total: {})",
+            key_str,
+            self.circuits.len()
+        );
+
         circuit_rc
     }
-    
+
     /// Remove a circuit by isolation key
     pub fn remove(&mut self, key: &IsolationKey) {
         let key_str = key.as_str();
         self.circuits.remove(key_str);
         self.insertion_order.retain(|k| k != key_str);
     }
-    
+
     /// Evict the oldest circuit
     fn evict_oldest(&mut self) {
         if let Some(oldest_key) = self.insertion_order.first().cloned() {
@@ -269,35 +279,35 @@ impl CircuitCache {
             self.insertion_order.remove(0);
         }
     }
-    
+
     /// Clear all cached circuits
     pub fn clear(&mut self) {
         log::info!("  🗑️ Clearing all {} cached circuits", self.circuits.len());
         self.circuits.clear();
         self.insertion_order.clear();
     }
-    
+
     /// Get the number of cached circuits
     pub fn len(&self) -> usize {
         self.circuits.len()
     }
-    
+
     /// Check if cache is empty
     pub fn is_empty(&self) -> bool {
         self.circuits.is_empty()
     }
-    
+
     /// Get statistics about the cache
     pub fn stats(&self) -> CircuitCacheStats {
-        let total_requests: u32 = self.circuits.values()
-            .map(|c| c.request_count)
-            .sum();
-        
-        let oldest_age = self.circuits.values()
+        let total_requests: u32 = self.circuits.values().map(|c| c.request_count).sum();
+
+        let oldest_age = self
+            .circuits
+            .values()
             .map(|c| c.created_at.elapsed())
             .max()
             .unwrap_or(Duration::ZERO);
-        
+
         CircuitCacheStats {
             cached_circuits: self.circuits.len(),
             total_requests,
@@ -319,14 +329,14 @@ pub struct CircuitCacheStats {
 /// Generate a simple UUID v4 for per-request isolation
 fn uuid_v4() -> String {
     use getrandom::getrandom;
-    
+
     let mut bytes = [0u8; 16];
     getrandom(&mut bytes).unwrap_or_else(|_| {
         // Fallback to timestamp if getrandom fails
         let now = web_time::Instant::now();
         bytes[0..8].copy_from_slice(&(now.elapsed().as_nanos() as u64).to_le_bytes());
     });
-    
+
     // Format as UUID
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
@@ -341,48 +351,47 @@ fn uuid_v4() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_isolation_key_per_domain() {
         let key1 = IsolationKey::for_destination("example.com", 80, IsolationType::PerDomain);
         let key2 = IsolationKey::for_destination("example.com", 443, IsolationType::PerDomain);
         let key3 = IsolationKey::for_destination("other.com", 80, IsolationType::PerDomain);
-        
+
         // Same domain, different ports should have same key
         assert_eq!(key1.as_str(), key2.as_str());
-        
+
         // Different domains should have different keys
         assert_ne!(key1.as_str(), key3.as_str());
     }
-    
+
     #[test]
     fn test_isolation_key_per_destination() {
         let key1 = IsolationKey::for_destination("example.com", 80, IsolationType::PerDestination);
         let key2 = IsolationKey::for_destination("example.com", 443, IsolationType::PerDestination);
-        
+
         // Same domain, different ports should have different keys
         assert_ne!(key1.as_str(), key2.as_str());
         assert_eq!(key1.as_str(), "example.com:80");
         assert_eq!(key2.as_str(), "example.com:443");
     }
-    
+
     #[test]
     fn test_isolation_key_none() {
         let key1 = IsolationKey::for_destination("example.com", 80, IsolationType::None);
         let key2 = IsolationKey::for_destination("other.com", 443, IsolationType::None);
-        
+
         // All destinations should have same key
         assert_eq!(key1.as_str(), key2.as_str());
         assert_eq!(key1.as_str(), "global");
     }
-    
+
     #[test]
     fn test_isolation_key_per_request() {
         let key1 = IsolationKey::for_destination("example.com", 80, IsolationType::PerRequest);
         let key2 = IsolationKey::for_destination("example.com", 80, IsolationType::PerRequest);
-        
+
         // Each request should have unique key
         assert_ne!(key1.as_str(), key2.as_str());
     }
 }
-

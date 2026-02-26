@@ -20,13 +20,13 @@
 //! { scheduler.borrow_mut().complete_work(result) };
 //! ```
 
+use futures::channel::oneshot;
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
-use std::cell::RefCell;
-use futures::channel::oneshot;
 
-use crate::protocol::{Circuit, RelayCell, RelayCommand};
 use crate::error::{Result, TorError};
+use crate::protocol::{Circuit, RelayCell};
 
 // ============================================================================
 // CONFIGURATION CONSTANTS
@@ -89,7 +89,7 @@ struct StreamInfo {
 enum StreamState {
     Opening,
     Open,
-    HalfClosed,  // We sent END, waiting for their END
+    HalfClosed, // We sent END, waiting for their END
     Closed,
 }
 
@@ -97,7 +97,11 @@ enum StreamState {
 #[derive(Debug, Clone)]
 pub enum SchedulerError {
     /// Send queue is full, apply backpressure
-    SendQueueFull { stream_id: u16, queued: usize, max: usize },
+    SendQueueFull {
+        stream_id: u16,
+        queued: usize,
+        max: usize,
+    },
     /// Too many streams on this circuit
     TooManyStreams { count: usize, max: usize },
     /// Circuit is dead
@@ -113,8 +117,16 @@ pub enum SchedulerError {
 impl std::fmt::Display for SchedulerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SchedulerError::SendQueueFull { stream_id, queued, max } => {
-                write!(f, "Send queue full for stream {} ({}/{} cells)", stream_id, queued, max)
+            SchedulerError::SendQueueFull {
+                stream_id,
+                queued,
+                max,
+            } => {
+                write!(
+                    f,
+                    "Send queue full for stream {} ({}/{} cells)",
+                    stream_id, queued, max
+                )
             }
             SchedulerError::TooManyStreams { count, max } => {
                 write!(f, "Too many streams ({}/{})", count, max)
@@ -140,18 +152,16 @@ impl std::error::Error for SchedulerError {}
 impl From<SchedulerError> for TorError {
     fn from(e: SchedulerError) -> Self {
         match e {
-            SchedulerError::SendQueueFull { .. } =>
-                TorError::ResourceExhausted(format!("{}", e)),
-            SchedulerError::TooManyStreams { .. } =>
-                TorError::ResourceExhausted(format!("{}", e)),
-            SchedulerError::CircuitDead { reason } =>
-                TorError::CircuitClosed(reason),
-            SchedulerError::Timeout { .. } =>
-                TorError::Timeout,
-            SchedulerError::StreamNotFound { stream_id } =>
-                TorError::Stream(format!("Stream {} not found", stream_id)),
-            SchedulerError::CircuitUnavailable =>
-                TorError::Internal("Circuit is checked out".into()),
+            SchedulerError::SendQueueFull { .. } => TorError::ResourceExhausted(format!("{}", e)),
+            SchedulerError::TooManyStreams { .. } => TorError::ResourceExhausted(format!("{}", e)),
+            SchedulerError::CircuitDead { reason } => TorError::CircuitClosed(reason),
+            SchedulerError::Timeout { .. } => TorError::Timeout,
+            SchedulerError::StreamNotFound { stream_id } => {
+                TorError::Stream(format!("Stream {} not found", stream_id))
+            }
+            SchedulerError::CircuitUnavailable => {
+                TorError::Internal("Circuit is checked out".into())
+            }
         }
     }
 }
@@ -178,20 +188,13 @@ pub enum PendingWork {
 /// Result of completed work
 pub enum WorkResult {
     /// Send completed
-    SendComplete {
-        stream_id: u16,
-        result: Result<()>,
-    },
+    SendComplete { stream_id: u16, result: Result<()> },
     /// Received a cell
-    Received {
-        cell: RelayCell,
-    },
+    Received { cell: RelayCell },
     /// No cell available
     NoData,
     /// Receive error
-    ReceiveError {
-        error: TorError,
-    },
+    ReceiveError { error: TorError },
 }
 
 // ============================================================================
@@ -310,7 +313,9 @@ impl CooperativeCircuit {
     ) -> std::result::Result<oneshot::Receiver<Result<()>>, SchedulerError> {
         // Check if circuit is dead
         if let Some(reason) = &self.death_reason {
-            return Err(SchedulerError::CircuitDead { reason: reason.clone() });
+            return Err(SchedulerError::CircuitDead {
+                reason: reason.clone(),
+            });
         }
 
         // Check total queue limit
@@ -323,7 +328,9 @@ impl CooperativeCircuit {
         }
 
         // Get or create stream info
-        let stream = self.streams.get_mut(&stream_id)
+        let stream = self
+            .streams
+            .get_mut(&stream_id)
             .ok_or(SchedulerError::StreamNotFound { stream_id })?;
 
         // Check per-stream queue limit
@@ -346,7 +353,11 @@ impl CooperativeCircuit {
         });
         self.total_queued_cells += 1;
 
-        log::trace!("📤 Queued cell for stream {} (queue size: {})", stream_id, stream.send_queue.len());
+        log::trace!(
+            "📤 Queued cell for stream {} (queue size: {})",
+            stream_id,
+            stream.send_queue.len()
+        );
 
         Ok(rx)
     }
@@ -359,10 +370,14 @@ impl CooperativeCircuit {
     ) -> std::result::Result<oneshot::Receiver<Result<RelayCell>>, SchedulerError> {
         // Check if circuit is dead
         if let Some(reason) = &self.death_reason {
-            return Err(SchedulerError::CircuitDead { reason: reason.clone() });
+            return Err(SchedulerError::CircuitDead {
+                reason: reason.clone(),
+            });
         }
 
-        let stream = self.streams.get_mut(&stream_id)
+        let stream = self
+            .streams
+            .get_mut(&stream_id)
             .ok_or(SchedulerError::StreamNotFound { stream_id })?;
 
         let (tx, rx) = oneshot::channel();
@@ -375,7 +390,11 @@ impl CooperativeCircuit {
         }
 
         // Check orphan buffer
-        if let Some(idx) = self.orphan_buffer.iter().position(|(sid, _)| *sid == stream_id) {
+        if let Some(idx) = self
+            .orphan_buffer
+            .iter()
+            .position(|(sid, _)| *sid == stream_id)
+        {
             let (_, cell) = self.orphan_buffer.remove(idx).unwrap();
             log::trace!("📥 Returning orphan cell for stream {}", stream_id);
             let _ = tx.send(Ok(cell));
@@ -386,12 +405,19 @@ impl CooperativeCircuit {
         let timeout = timeout_ms.unwrap_or(DEFAULT_RECEIVE_TIMEOUT_MS);
         let deadline = js_sys::Date::now() + timeout as f64;
 
-        self.recv_waiters.insert(stream_id, PendingReceive {
-            delivery: tx,
-            deadline,
-        });
+        self.recv_waiters.insert(
+            stream_id,
+            PendingReceive {
+                delivery: tx,
+                deadline,
+            },
+        );
 
-        log::trace!("📥 Registered receive waiter for stream {} (timeout: {}ms)", stream_id, timeout);
+        log::trace!(
+            "📥 Registered receive waiter for stream {} (timeout: {}ms)",
+            stream_id,
+            timeout
+        );
 
         Ok(rx)
     }
@@ -494,17 +520,22 @@ impl CooperativeCircuit {
                     expired_count += 1;
                     self.total_queued_cells = self.total_queued_cells.saturating_sub(1);
                 } else {
-                    break;  // Queue is ordered by insertion time
+                    break; // Queue is ordered by insertion time
                 }
             }
             if expired_count > 0 {
-                log::warn!("⏰ Expired {} send operations for stream {}",
-                    expired_count, stream.stream_id);
+                log::warn!(
+                    "⏰ Expired {} send operations for stream {}",
+                    expired_count,
+                    stream.stream_id
+                );
             }
         }
 
         // Expire receive operations
-        let expired_receives: Vec<u16> = self.recv_waiters.iter()
+        let expired_receives: Vec<u16> = self
+            .recv_waiters
+            .iter()
             .filter(|(_, waiter)| now > waiter.deadline)
             .map(|(stream_id, _)| *stream_id)
             .collect();
@@ -524,7 +555,11 @@ impl CooperativeCircuit {
     /// Deliver a received cell to the appropriate stream
     pub fn deliver_received(&mut self, cell: RelayCell) {
         let stream_id = cell.stream_id;
-        log::trace!("📥 Delivering cell for stream {}: {:?}", stream_id, cell.command);
+        log::trace!(
+            "📥 Delivering cell for stream {}: {:?}",
+            stream_id,
+            cell.command
+        );
 
         // Route to waiting stream
         if let Some(waiter) = self.recv_waiters.remove(&stream_id) {
@@ -544,7 +579,10 @@ impl CooperativeCircuit {
             // Clean up orphan buffer if too large
             while self.orphan_buffer.len() > MAX_INCOMING_BUFFER {
                 let (old_stream_id, _) = self.orphan_buffer.pop_front().unwrap();
-                log::warn!("⚠️ Evicting orphan cell for stream {} (buffer full)", old_stream_id);
+                log::warn!(
+                    "⚠️ Evicting orphan cell for stream {} (buffer full)",
+                    old_stream_id
+                );
             }
         }
     }
@@ -554,7 +592,7 @@ impl CooperativeCircuit {
         log::error!("💀 Circuit {} dead: {}", self.circuit_id, reason);
 
         self.death_reason = Some(reason.clone());
-        self.circuit = None;  // Drop the circuit
+        self.circuit = None; // Drop the circuit
 
         let error = TorError::CircuitClosed(reason);
 
@@ -581,16 +619,19 @@ impl CooperativeCircuit {
 
     /// Register a new stream (internal use during open_stream)
     pub fn register_stream(&mut self, stream_id: u16, host: &str, port: u16) {
-        self.streams.insert(stream_id, StreamInfo {
+        self.streams.insert(
             stream_id,
-            host: host.to_string(),
-            port,
-            state: StreamState::Opening,
-            send_window: 500,
-            recv_window: 500,
-            send_queue: VecDeque::new(),
-            recv_buffer: VecDeque::new(),
-        });
+            StreamInfo {
+                stream_id,
+                host: host.to_string(),
+                port,
+                state: StreamState::Opening,
+                send_window: 500,
+                recv_window: 500,
+                send_queue: VecDeque::new(),
+                recv_buffer: VecDeque::new(),
+            },
+        );
         self.stream_order.push(stream_id);
     }
 
@@ -674,9 +715,7 @@ impl StreamHandle {
 ///
 /// This is THE CRITICAL function that avoids borrow-across-await.
 /// It alternates between brief borrows for sync work and async I/O.
-pub async fn drive_scheduler(
-    scheduler: &Rc<RefCell<CooperativeCircuit>>,
-) -> Result<bool> {
+pub async fn drive_scheduler(scheduler: &Rc<RefCell<CooperativeCircuit>>) -> Result<bool> {
     // Get work to do (brief borrow)
     let work = {
         let mut s = scheduler.borrow_mut();
@@ -685,7 +724,11 @@ pub async fn drive_scheduler(
     // Borrow released!
 
     match work {
-        PendingWork::Send { stream_id, cell, completion } => {
+        PendingWork::Send {
+            stream_id,
+            cell,
+            completion,
+        } => {
             // Checkout circuit (brief borrow)
             let mut circuit = {
                 let mut s = scheduler.borrow_mut();
@@ -693,7 +736,8 @@ pub async fn drive_scheduler(
                     Some(c) => c,
                     None => {
                         // Circuit already checked out or dead
-                        let _ = completion.send(Err(TorError::Internal("Circuit unavailable".into())));
+                        let _ =
+                            completion.send(Err(TorError::Internal("Circuit unavailable".into())));
                         return Ok(false);
                     }
                 }
@@ -719,7 +763,7 @@ pub async fn drive_scheduler(
                 s.mark_circuit_dead(format!("Send error: {}", e));
             }
 
-            Ok(true)  // Did work
+            Ok(true) // Did work
         }
 
         PendingWork::Receive => {
@@ -749,9 +793,9 @@ pub async fn drive_scheduler(
                     // Deliver cell (brief borrow)
                     let mut s = scheduler.borrow_mut();
                     s.deliver_received(cell);
-                    Ok(true)  // Did work
+                    Ok(true) // Did work
                 }
-                Ok(None) => Ok(false),  // No data
+                Ok(None) => Ok(false), // No data
                 Err(e) => {
                     // Mark dead on error (brief borrow)
                     let mut s = scheduler.borrow_mut();

@@ -3,10 +3,10 @@
 //! This implements the `TcpProvider` trait required by Arti,
 //! using our WebSocket-based transport layer.
 
+use futures::Future;
 use std::io::Result as IoResult;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use futures::Future;
 
 /// Listener stub (not needed for Tor clients)
 pub struct WasmTcpListener;
@@ -28,7 +28,7 @@ pub struct WasmConnectFuture<T> {
 
 impl<T> Future for WasmConnectFuture<T> {
     type Output = IoResult<T>;
-    
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.inner.as_mut().poll(cx)
     }
@@ -39,7 +39,7 @@ pub struct WasmListenFuture;
 
 impl Future for WasmListenFuture {
     type Output = IoResult<WasmTcpListener>;
-    
+
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         Poll::Ready(WasmTcpListener::unsupported())
     }
@@ -47,4 +47,3 @@ impl Future for WasmListenFuture {
 
 // Note: AsyncRead and AsyncWrite are already implemented for WasmTcpStream
 // in transport/websocket.rs - no need to implement them again here!
-

@@ -7,12 +7,12 @@
 //! - Enforce stream limits per circuit (rate limiting)
 //! - Track stream lifecycle for cleanup
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::cell::RefCell;
 
-use crate::protocol::{Circuit, TorStream};
-use crate::error::{TorError, Result};
+use crate::error::{Result, TorError};
+use crate::protocol::Circuit;
 
 /// Configuration for stream multiplexer
 #[derive(Debug, Clone)]
@@ -98,9 +98,10 @@ impl StreamMultiplexer {
     pub async fn open_stream(&mut self, host: &str, port: u16) -> Result<u16> {
         // Check limits
         if self.streams.len() >= self.config.max_streams as usize {
-            return Err(TorError::ResourceExhausted(
-                format!("Too many streams (max {})", self.config.max_streams)
-            ));
+            return Err(TorError::ResourceExhausted(format!(
+                "Too many streams (max {})",
+                self.config.max_streams
+            )));
         }
 
         // Get next stream ID
@@ -112,15 +113,18 @@ impl StreamMultiplexer {
         // Open stream on circuit
         // Note: In the actual implementation, this would call the circuit's open_stream method
         // For now, we just track the state
-        
+
         // Record the stream
-        self.streams.insert(stream_id, StreamState {
+        self.streams.insert(
             stream_id,
-            target: target.clone(),
-            is_open: true,
-            bytes_sent: 0,
-            bytes_received: 0,
-        });
+            StreamState {
+                stream_id,
+                target: target.clone(),
+                is_open: true,
+                bytes_sent: 0,
+                bytes_received: 0,
+            },
+        );
 
         self.stats.streams_opened += 1;
         self.stats.active_streams = self.streams.len();
@@ -132,7 +136,9 @@ impl StreamMultiplexer {
 
     /// Close a stream
     pub async fn close_stream(&mut self, stream_id: u16) -> Result<()> {
-        let stream = self.streams.get_mut(&stream_id)
+        let stream = self
+            .streams
+            .get_mut(&stream_id)
             .ok_or_else(|| TorError::InvalidState(format!("Unknown stream {}", stream_id)))?;
 
         if !stream.is_open {
@@ -144,7 +150,7 @@ impl StreamMultiplexer {
         // Mark as closed
         stream.is_open = false;
         self.stats.streams_closed += 1;
-        
+
         // Remove from active streams
         self.streams.remove(&stream_id);
         self.stats.active_streams = self.streams.len();
@@ -154,7 +160,9 @@ impl StreamMultiplexer {
 
     /// Send data on a stream
     pub async fn send(&mut self, stream_id: u16, data: &[u8]) -> Result<()> {
-        let stream = self.streams.get_mut(&stream_id)
+        let stream = self
+            .streams
+            .get_mut(&stream_id)
             .ok_or_else(|| TorError::InvalidState(format!("Unknown stream {}", stream_id)))?;
 
         if !stream.is_open {
@@ -179,7 +187,9 @@ impl StreamMultiplexer {
 
     /// Route incoming data to the correct stream
     pub fn route_data(&mut self, stream_id: u16, data: &[u8]) -> Result<()> {
-        let stream = self.streams.get_mut(&stream_id)
+        let stream = self
+            .streams
+            .get_mut(&stream_id)
             .ok_or_else(|| TorError::InvalidState(format!("Unknown stream {}", stream_id)))?;
 
         if !stream.is_open {
@@ -200,9 +210,9 @@ impl StreamMultiplexer {
     /// Handle a stream failure
     pub fn handle_stream_failure(&mut self, stream_id: u16, error: &str) {
         log::warn!("Stream {} failed: {}", stream_id, error);
-        
+
         self.stats.stream_failures += 1;
-        
+
         if let Some(stream) = self.streams.get_mut(&stream_id) {
             stream.is_open = false;
         }
@@ -241,7 +251,8 @@ impl StreamMultiplexer {
 
     /// Check if a stream is open
     pub fn is_stream_open(&self, stream_id: u16) -> bool {
-        self.streams.get(&stream_id)
+        self.streams
+            .get(&stream_id)
             .map(|s| s.is_open)
             .unwrap_or(false)
     }
@@ -268,7 +279,9 @@ impl StreamMultiplexer {
 
             // If we've wrapped around completely, we're out of IDs
             if self.next_stream_id == start {
-                return Err(TorError::ResourceExhausted("No stream IDs available".into()));
+                return Err(TorError::ResourceExhausted(
+                    "No stream IDs available".into(),
+                ));
             }
         }
     }
@@ -285,4 +298,3 @@ mod tests {
         assert!(config.isolate_failures);
     }
 }
-

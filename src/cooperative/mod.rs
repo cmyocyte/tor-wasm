@@ -56,28 +56,24 @@ mod stream;
 mod tls;
 
 pub use scheduler::{
-    CooperativeCircuit,
-    StreamHandle,
-    SchedulerError,
-    SchedulerStats,
-    SchedulerDriver,
-    PendingWork,
-    WorkResult,
     // The critical functions that avoid borrow-across-await
     drive_scheduler,
     drive_until_complete,
+    CooperativeCircuit,
+    PendingWork,
+    SchedulerDriver,
+    SchedulerError,
+    SchedulerStats,
+    StreamHandle,
+    WorkResult,
 };
 pub use stream::CooperativeStream;
 pub use tls::CooperativeTlsStream;
 
 // Configuration constants - exposed for documentation/testing
 pub use scheduler::{
-    MAX_CELLS_PER_STREAM,
-    MAX_TOTAL_QUEUED_CELLS,
-    MAX_STREAMS_PER_CIRCUIT,
-    MAX_INCOMING_BUFFER,
-    DEFAULT_RECEIVE_TIMEOUT_MS,
-    DEFAULT_SEND_TIMEOUT_MS,
+    DEFAULT_RECEIVE_TIMEOUT_MS, DEFAULT_SEND_TIMEOUT_MS, MAX_CELLS_PER_STREAM, MAX_INCOMING_BUFFER,
+    MAX_STREAMS_PER_CIRCUIT, MAX_TOTAL_QUEUED_CELLS,
 };
 
 /// Helper function to open a stream using the cooperative pattern
@@ -92,8 +88,8 @@ pub async fn open_cooperative_stream(
     host: &str,
     port: u16,
 ) -> crate::error::Result<CooperativeStream> {
-    use crate::protocol::{RelayCell, RelayCommand};
     use crate::error::TorError;
+    use crate::protocol::{RelayCell, RelayCommand};
 
     // Check if we can open a stream (brief borrow)
     let stream_id = {
@@ -111,17 +107,13 @@ pub async fn open_cooperative_stream(
 
     // Create RELAY_BEGIN cell
     let target = format!("{}:{}\0", host, port);
-    let begin_cell = RelayCell::new(
-        RelayCommand::Begin,
-        stream_id,
-        target.as_bytes().to_vec(),
-    );
+    let begin_cell = RelayCell::new(RelayCommand::Begin, stream_id, target.as_bytes().to_vec());
 
     // Queue the send (brief borrow)
     let send_rx = {
         let mut s = scheduler.borrow_mut();
         s.queue_send(stream_id, begin_cell, Some(DEFAULT_SEND_TIMEOUT_MS))
-            .map_err(|e| TorError::from(e))?
+            .map_err(TorError::from)?
     };
     // Borrow released!
 
@@ -133,7 +125,7 @@ pub async fn open_cooperative_stream(
     let recv_rx = {
         let mut s = scheduler.borrow_mut();
         s.register_receive(stream_id, Some(DEFAULT_RECEIVE_TIMEOUT_MS))
-            .map_err(|e| TorError::from(e))?
+            .map_err(TorError::from)?
     };
     // Borrow released!
 
@@ -163,7 +155,10 @@ pub async fn open_cooperative_stream(
             }
 
             let reason = cell.data.first().copied().unwrap_or(0);
-            Err(TorError::Stream(format!("Connection refused (reason: {})", reason)))
+            Err(TorError::Stream(format!(
+                "Connection refused (reason: {})",
+                reason
+            )))
         }
         _ => {
             // Clean up failed stream (brief borrow)
@@ -172,7 +167,10 @@ pub async fn open_cooperative_stream(
                 s.remove_stream(stream_id);
             }
 
-            Err(TorError::ProtocolError(format!("Unexpected response: {:?}", cell.command)))
+            Err(TorError::ProtocolError(format!(
+                "Unexpected response: {:?}",
+                cell.command
+            )))
         }
     }
 }

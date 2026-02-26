@@ -22,23 +22,23 @@
 //! - **Near-native timing**: Eliminates timing-based detection
 //! - **Iframe protection**: MutationObserver patches dynamically created iframes
 
+use js_sys::{Array, Object, Reflect};
 use wasm_bindgen::prelude::*;
-use js_sys::{Object, Reflect, Array};
 
-pub mod profile;
-pub mod prng;
-pub mod proxy_helpers;
 pub mod iframe_observer;
-pub mod tier1_webrtc;
+pub mod prng;
+pub mod profile;
+pub mod proxy_helpers;
 pub mod tier1_canvas;
-pub mod tier1_webgl;
 pub mod tier1_navigator;
 pub mod tier1_screen;
-pub mod tier2_timezone;
+pub mod tier1_webgl;
+pub mod tier1_webrtc;
 pub mod tier2_audio;
+pub mod tier2_client_rects;
 pub mod tier2_fonts;
 pub mod tier2_performance;
-pub mod tier2_client_rects;
+pub mod tier2_timezone;
 pub mod tier3_hardening;
 
 use profile::{DefenseConfig, NormalizedProfile};
@@ -56,8 +56,7 @@ pub fn apply_fingerprint_defense(options: JsValue) -> Result<JsValue, JsValue> {
     let config: DefenseConfig = if options.is_undefined() || options.is_null() {
         DefenseConfig::default()
     } else {
-        serde_wasm_bindgen::from_value(options)
-            .unwrap_or_else(|_| DefenseConfig::default())
+        serde_wasm_bindgen::from_value(options).unwrap_or_else(|_| DefenseConfig::default())
     };
 
     let mut applied: Vec<&str> = Vec::new();
@@ -107,15 +106,42 @@ pub fn apply_fingerprint_defense(options: JsValue) -> Result<JsValue, JsValue> {
     }
 
     // Tier 3: Hardening
-    if config.speech { tier3_hardening::apply_speech()?; applied.push("speech"); }
-    if config.webgpu { tier3_hardening::apply_webgpu()?; applied.push("webgpu"); }
-    if config.network { tier3_hardening::apply_network()?; applied.push("network"); }
-    if config.storage { tier3_hardening::apply_storage()?; applied.push("storage"); }
-    if config.media_devices { tier3_hardening::apply_media_devices()?; applied.push("mediaDevices"); }
-    if config.battery { tier3_hardening::apply_battery()?; applied.push("battery"); }
-    if config.gamepad { tier3_hardening::apply_gamepad()?; applied.push("gamepad"); }
-    if config.css_media_queries { tier3_hardening::apply_css_media_queries()?; applied.push("cssMediaQueries"); }
-    if config.workers { tier3_hardening::apply_workers()?; applied.push("workers"); }
+    if config.speech {
+        tier3_hardening::apply_speech()?;
+        applied.push("speech");
+    }
+    if config.webgpu {
+        tier3_hardening::apply_webgpu()?;
+        applied.push("webgpu");
+    }
+    if config.network {
+        tier3_hardening::apply_network()?;
+        applied.push("network");
+    }
+    if config.storage {
+        tier3_hardening::apply_storage()?;
+        applied.push("storage");
+    }
+    if config.media_devices {
+        tier3_hardening::apply_media_devices()?;
+        applied.push("mediaDevices");
+    }
+    if config.battery {
+        tier3_hardening::apply_battery()?;
+        applied.push("battery");
+    }
+    if config.gamepad {
+        tier3_hardening::apply_gamepad()?;
+        applied.push("gamepad");
+    }
+    if config.css_media_queries {
+        tier3_hardening::apply_css_media_queries()?;
+        applied.push("cssMediaQueries");
+    }
+    if config.workers {
+        tier3_hardening::apply_workers()?;
+        applied.push("workers");
+    }
 
     // Iframe protection (new — not in JS version)
     if config.iframe_protection {
@@ -130,8 +156,16 @@ pub fn apply_fingerprint_defense(options: JsValue) -> Result<JsValue, JsValue> {
         applied_arr.push(&JsValue::from_str(name));
     }
     Reflect::set(&result, &JsValue::from_str("applied"), &applied_arr)?;
-    Reflect::set(&result, &JsValue::from_str("count"), &JsValue::from_f64(applied.len() as f64))?;
-    Reflect::set(&result, &JsValue::from_str("normalized"), &build_normalized_object()?)?;
+    Reflect::set(
+        &result,
+        &JsValue::from_str("count"),
+        &JsValue::from_f64(applied.len() as f64),
+    )?;
+    Reflect::set(
+        &result,
+        &JsValue::from_str("normalized"),
+        &build_normalized_object()?,
+    )?;
 
     Ok(result.into())
 }
@@ -147,15 +181,16 @@ pub fn check_defense_status() -> JsValue {
             let _ = Reflect::set(
                 &status,
                 &JsValue::from_str("navigator"),
-                &JsValue::from_bool(platform.as_string().as_deref() == Some(NormalizedProfile::PLATFORM)),
+                &JsValue::from_bool(
+                    platform.as_string().as_deref() == Some(NormalizedProfile::PLATFORM),
+                ),
             );
         }
     }
 
     // WebRTC check
-    let webrtc_blocked = js_sys::eval(
-        "try { new RTCPeerConnection(); false } catch(e) { true }"
-    ).unwrap_or(JsValue::FALSE);
+    let webrtc_blocked = js_sys::eval("try { new RTCPeerConnection(); false } catch(e) { true }")
+        .unwrap_or(JsValue::FALSE);
     let _ = Reflect::set(&status, &JsValue::from_str("webrtc"), &webrtc_blocked);
 
     // Screen check
@@ -170,8 +205,7 @@ pub fn check_defense_status() -> JsValue {
     }
 
     // Timezone check
-    let tz = js_sys::eval("new Date().getTimezoneOffset()")
-        .unwrap_or(JsValue::from_f64(-1.0));
+    let tz = js_sys::eval("new Date().getTimezoneOffset()").unwrap_or(JsValue::from_f64(-1.0));
     let _ = Reflect::set(
         &status,
         &JsValue::from_str("timezone"),
@@ -179,8 +213,7 @@ pub fn check_defense_status() -> JsValue {
     );
 
     // Performance check
-    let perf = js_sys::eval("performance.now() % 100")
-        .unwrap_or(JsValue::from_f64(1.0));
+    let perf = js_sys::eval("performance.now() % 100").unwrap_or(JsValue::from_f64(1.0));
     let _ = Reflect::set(
         &status,
         &JsValue::from_str("performance"),
@@ -190,15 +223,17 @@ pub fn check_defense_status() -> JsValue {
     // WebGL check
     let webgl = js_sys::eval(
         "try { var c=document.createElement('canvas'); var g=c.getContext('webgl'); \
-         g ? g.getExtension('WEBGL_debug_renderer_info')===null : true } catch(e) { true }"
-    ).unwrap_or(JsValue::FALSE);
+         g ? g.getExtension('WEBGL_debug_renderer_info')===null : true } catch(e) { true }",
+    )
+    .unwrap_or(JsValue::FALSE);
     let _ = Reflect::set(&status, &JsValue::from_str("webgl"), &webgl);
 
     // Anti-detection check (the key test)
     let antidetect = js_sys::eval(
         "try { var d=Object.getOwnPropertyDescriptor(navigator,'platform'); \
-         d && d.get ? d.get.toString().includes('[native code]') : false } catch(e) { false }"
-    ).unwrap_or(JsValue::FALSE);
+         d && d.get ? d.get.toString().includes('[native code]') : false } catch(e) { false }",
+    )
+    .unwrap_or(JsValue::FALSE);
     let _ = Reflect::set(&status, &JsValue::from_str("antiDetection"), &antidetect);
 
     status.into()
@@ -212,18 +247,70 @@ pub fn get_normalized_profile() -> JsValue {
 
 fn build_normalized_object() -> Result<JsValue, JsValue> {
     let obj = Object::new();
-    Reflect::set(&obj, &JsValue::from_str("platform"), &JsValue::from_str(NormalizedProfile::PLATFORM))?;
-    Reflect::set(&obj, &JsValue::from_str("userAgent"), &JsValue::from_str(NormalizedProfile::USER_AGENT))?;
-    Reflect::set(&obj, &JsValue::from_str("vendor"), &JsValue::from_str(NormalizedProfile::VENDOR))?;
-    Reflect::set(&obj, &JsValue::from_str("language"), &JsValue::from_str(NormalizedProfile::LANGUAGE))?;
-    Reflect::set(&obj, &JsValue::from_str("hardwareConcurrency"), &JsValue::from_f64(NormalizedProfile::HARDWARE_CONCURRENCY as f64))?;
-    Reflect::set(&obj, &JsValue::from_str("deviceMemory"), &JsValue::from_f64(NormalizedProfile::DEVICE_MEMORY as f64))?;
-    Reflect::set(&obj, &JsValue::from_str("screenWidth"), &JsValue::from_f64(NormalizedProfile::SCREEN_WIDTH as f64))?;
-    Reflect::set(&obj, &JsValue::from_str("screenHeight"), &JsValue::from_f64(NormalizedProfile::SCREEN_HEIGHT as f64))?;
-    Reflect::set(&obj, &JsValue::from_str("timezone"), &JsValue::from_str(NormalizedProfile::TIMEZONE))?;
-    Reflect::set(&obj, &JsValue::from_str("webglVendor"), &JsValue::from_str(NormalizedProfile::WEBGL_VENDOR))?;
-    Reflect::set(&obj, &JsValue::from_str("webglRenderer"), &JsValue::from_str(NormalizedProfile::WEBGL_RENDERER))?;
-    Reflect::set(&obj, &JsValue::from_str("audioSampleRate"), &JsValue::from_f64(NormalizedProfile::AUDIO_SAMPLE_RATE as f64))?;
-    Reflect::set(&obj, &JsValue::from_str("performancePrecision"), &JsValue::from_f64(NormalizedProfile::PERFORMANCE_PRECISION_MS))?;
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("platform"),
+        &JsValue::from_str(NormalizedProfile::PLATFORM),
+    )?;
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("userAgent"),
+        &JsValue::from_str(NormalizedProfile::USER_AGENT),
+    )?;
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("vendor"),
+        &JsValue::from_str(NormalizedProfile::VENDOR),
+    )?;
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("language"),
+        &JsValue::from_str(NormalizedProfile::LANGUAGE),
+    )?;
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("hardwareConcurrency"),
+        &JsValue::from_f64(NormalizedProfile::HARDWARE_CONCURRENCY as f64),
+    )?;
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("deviceMemory"),
+        &JsValue::from_f64(NormalizedProfile::DEVICE_MEMORY as f64),
+    )?;
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("screenWidth"),
+        &JsValue::from_f64(NormalizedProfile::SCREEN_WIDTH as f64),
+    )?;
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("screenHeight"),
+        &JsValue::from_f64(NormalizedProfile::SCREEN_HEIGHT as f64),
+    )?;
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("timezone"),
+        &JsValue::from_str(NormalizedProfile::TIMEZONE),
+    )?;
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("webglVendor"),
+        &JsValue::from_str(NormalizedProfile::WEBGL_VENDOR),
+    )?;
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("webglRenderer"),
+        &JsValue::from_str(NormalizedProfile::WEBGL_RENDERER),
+    )?;
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("audioSampleRate"),
+        &JsValue::from_f64(NormalizedProfile::AUDIO_SAMPLE_RATE as f64),
+    )?;
+    Reflect::set(
+        &obj,
+        &JsValue::from_str("performancePrecision"),
+        &JsValue::from_f64(NormalizedProfile::PERFORMANCE_PRECISION_MS),
+    )?;
     Ok(obj.into())
 }

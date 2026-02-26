@@ -3,9 +3,8 @@
 //! These traits are required by Arti but not usable in WASM environment.
 //! We provide stub implementations that return errors or panic.
 
-use std::io::{self, Result as IoResult};
-use std::net::SocketAddr;
 use futures::Future;
+use std::io::{self, Result as IoResult};
 
 /// Unsupported UDP socket (WASM can't do UDP)
 #[derive(Debug)]
@@ -46,8 +45,6 @@ impl UnsupportedListener {
     }
 }
 
-use super::WasmRuntime;
-
 // We'll implement these traits for WasmRuntime in separate files
 // to keep code organized
 
@@ -68,23 +65,21 @@ impl<T> UnsupportedFuture<T> {
 
 impl<T> Future for UnsupportedFuture<T> {
     type Output = IoResult<T>;
-    
+
     fn poll(
         self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         // Safe because we're not moving out of the pinned data
         let this = unsafe { self.get_unchecked_mut() };
-        std::task::Poll::Ready(Err(
-            this.error.take().unwrap_or_else(|| {
-                io::Error::new(io::ErrorKind::Other, "Unsupported operation")
-            })
-        ))
+        std::task::Poll::Ready(Err(this
+            .error
+            .take()
+            .unwrap_or_else(|| io::Error::other("Unsupported operation"))))
     }
 }
 
 // Export helper types
-pub use UnsupportedUdpSocket as WasmUdpSocket;
-pub use UnsupportedStream as WasmUnixStream;
 pub use UnsupportedListener as WasmListener;
-
+pub use UnsupportedStream as WasmUnixStream;
+pub use UnsupportedUdpSocket as WasmUdpSocket;

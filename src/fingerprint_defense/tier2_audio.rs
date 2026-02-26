@@ -3,12 +3,12 @@
 //! Injects noise into AnalyserNode frequency/time-domain data and
 //! normalizes AudioContext sample rate and channel count.
 
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
-use js_sys::{Array, Float32Array, Uint8Array, Reflect};
 use super::prng::SessionPrng;
 use super::profile::NormalizedProfile;
 use super::proxy_helpers;
+use js_sys::{Array, Float32Array, Reflect, Uint8Array};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 pub fn apply() -> Result<(), JsValue> {
     let seed = SessionPrng::seed();
@@ -30,50 +30,70 @@ fn apply_analyser_node(seed: u32) -> Result<(), JsValue> {
         let orig = Reflect::get(&proto, &JsValue::from_str("getFloatFrequencyData"))?;
         let orig_fn = orig.clone();
 
-        let apply_trap = Closure::wrap(Box::new(move |_target: JsValue, this_arg: JsValue, args: JsValue| -> Result<JsValue, JsValue> {
-            proxy_helpers::call_function(&orig_fn, &this_arg, &args)?;
-            let args_arr: &Array = args.unchecked_ref();
-            if args_arr.length() >= 1 {
-                let arr_val = args_arr.get(0);
-                if let Ok(arr) = arr_val.dyn_into::<Float32Array>() {
-                    let mut buffer = vec![0f32; arr.length() as usize];
-                    arr.copy_to(&mut buffer);
-                    for (i, val) in buffer.iter_mut().enumerate() {
-                        let noise = ((SessionPrng::seeded_random(seed, i as u32 + 0x700000) & 0xFF) as f32 - 128.0) * 0.00001;
-                        *val += noise;
+        let apply_trap = Closure::wrap(Box::new(
+            move |_target: JsValue, this_arg: JsValue, args: JsValue| -> Result<JsValue, JsValue> {
+                proxy_helpers::call_function(&orig_fn, &this_arg, &args)?;
+                let args_arr: &Array = args.unchecked_ref();
+                if args_arr.length() >= 1 {
+                    let arr_val = args_arr.get(0);
+                    if let Ok(arr) = arr_val.dyn_into::<Float32Array>() {
+                        let mut buffer = vec![0f32; arr.length() as usize];
+                        arr.copy_to(&mut buffer);
+                        for (i, val) in buffer.iter_mut().enumerate() {
+                            let noise = ((SessionPrng::seeded_random(seed, i as u32 + 0x700000)
+                                & 0xFF) as f32
+                                - 128.0)
+                                * 0.00001;
+                            *val += noise;
+                        }
+                        arr.copy_from(&buffer);
                     }
-                    arr.copy_from(&buffer);
                 }
-            }
-            Ok(JsValue::UNDEFINED)
-        }) as Box<dyn FnMut(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>);
+                Ok(JsValue::UNDEFINED)
+            },
+        )
+            as Box<dyn FnMut(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>);
 
         let proxied = proxy_helpers::proxy_function_with_apply(&orig, apply_trap)?;
-        Reflect::set(&proto, &JsValue::from_str("getFloatFrequencyData"), &proxied)?;
+        Reflect::set(
+            &proto,
+            &JsValue::from_str("getFloatFrequencyData"),
+            &proxied,
+        )?;
 
         // getByteFrequencyData — add ±1 to ~6% of entries
         let orig = Reflect::get(&proto, &JsValue::from_str("getByteFrequencyData"))?;
         let orig_fn = orig.clone();
 
-        let apply_trap = Closure::wrap(Box::new(move |_target: JsValue, this_arg: JsValue, args: JsValue| -> Result<JsValue, JsValue> {
-            proxy_helpers::call_function(&orig_fn, &this_arg, &args)?;
-            let args_arr: &Array = args.unchecked_ref();
-            if args_arr.length() >= 1 {
-                let arr_val = args_arr.get(0);
-                if let Ok(arr) = arr_val.dyn_into::<Uint8Array>() {
-                    let mut buffer = vec![0u8; arr.length() as usize];
-                    arr.copy_to(&mut buffer);
-                    for (i, val) in buffer.iter_mut().enumerate() {
-                        if (SessionPrng::seeded_random(seed, i as u32 + 0x800000) & 0xF) == 0 {
-                            let delta = if SessionPrng::seeded_random(seed, i as u32 + 0x900000) & 1 == 1 { 1i16 } else { -1 };
-                            *val = (*val as i16 + delta).clamp(0, 255) as u8;
+        let apply_trap = Closure::wrap(Box::new(
+            move |_target: JsValue, this_arg: JsValue, args: JsValue| -> Result<JsValue, JsValue> {
+                proxy_helpers::call_function(&orig_fn, &this_arg, &args)?;
+                let args_arr: &Array = args.unchecked_ref();
+                if args_arr.length() >= 1 {
+                    let arr_val = args_arr.get(0);
+                    if let Ok(arr) = arr_val.dyn_into::<Uint8Array>() {
+                        let mut buffer = vec![0u8; arr.length() as usize];
+                        arr.copy_to(&mut buffer);
+                        for (i, val) in buffer.iter_mut().enumerate() {
+                            if (SessionPrng::seeded_random(seed, i as u32 + 0x800000) & 0xF) == 0 {
+                                let delta = if SessionPrng::seeded_random(seed, i as u32 + 0x900000)
+                                    & 1
+                                    == 1
+                                {
+                                    1i16
+                                } else {
+                                    -1
+                                };
+                                *val = (*val as i16 + delta).clamp(0, 255) as u8;
+                            }
                         }
+                        arr.copy_from(&buffer);
                     }
-                    arr.copy_from(&buffer);
                 }
-            }
-            Ok(JsValue::UNDEFINED)
-        }) as Box<dyn FnMut(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>);
+                Ok(JsValue::UNDEFINED)
+            },
+        )
+            as Box<dyn FnMut(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>);
 
         let proxied = proxy_helpers::proxy_function_with_apply(&orig, apply_trap)?;
         Reflect::set(&proto, &JsValue::from_str("getByteFrequencyData"), &proxied)?;
@@ -82,26 +102,36 @@ fn apply_analyser_node(seed: u32) -> Result<(), JsValue> {
         let orig = Reflect::get(&proto, &JsValue::from_str("getFloatTimeDomainData"))?;
         let orig_fn = orig.clone();
 
-        let apply_trap = Closure::wrap(Box::new(move |_target: JsValue, this_arg: JsValue, args: JsValue| -> Result<JsValue, JsValue> {
-            proxy_helpers::call_function(&orig_fn, &this_arg, &args)?;
-            let args_arr: &Array = args.unchecked_ref();
-            if args_arr.length() >= 1 {
-                let arr_val = args_arr.get(0);
-                if let Ok(arr) = arr_val.dyn_into::<Float32Array>() {
-                    let mut buffer = vec![0f32; arr.length() as usize];
-                    arr.copy_to(&mut buffer);
-                    for (i, val) in buffer.iter_mut().enumerate() {
-                        let noise = ((SessionPrng::seeded_random(seed, i as u32 + 0xA00000) & 0xFF) as f32 - 128.0) * 0.000001;
-                        *val += noise;
+        let apply_trap = Closure::wrap(Box::new(
+            move |_target: JsValue, this_arg: JsValue, args: JsValue| -> Result<JsValue, JsValue> {
+                proxy_helpers::call_function(&orig_fn, &this_arg, &args)?;
+                let args_arr: &Array = args.unchecked_ref();
+                if args_arr.length() >= 1 {
+                    let arr_val = args_arr.get(0);
+                    if let Ok(arr) = arr_val.dyn_into::<Float32Array>() {
+                        let mut buffer = vec![0f32; arr.length() as usize];
+                        arr.copy_to(&mut buffer);
+                        for (i, val) in buffer.iter_mut().enumerate() {
+                            let noise = ((SessionPrng::seeded_random(seed, i as u32 + 0xA00000)
+                                & 0xFF) as f32
+                                - 128.0)
+                                * 0.000001;
+                            *val += noise;
+                        }
+                        arr.copy_from(&buffer);
                     }
-                    arr.copy_from(&buffer);
                 }
-            }
-            Ok(JsValue::UNDEFINED)
-        }) as Box<dyn FnMut(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>);
+                Ok(JsValue::UNDEFINED)
+            },
+        )
+            as Box<dyn FnMut(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>);
 
         let proxied = proxy_helpers::proxy_function_with_apply(&orig, apply_trap)?;
-        Reflect::set(&proto, &JsValue::from_str("getFloatTimeDomainData"), &proxied)?;
+        Reflect::set(
+            &proto,
+            &JsValue::from_str("getFloatTimeDomainData"),
+            &proxied,
+        )?;
     }
 
     Ok(())

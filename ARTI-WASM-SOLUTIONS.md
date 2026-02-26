@@ -181,7 +181,7 @@ The following is a ready-to-post comment for the Arti GitLab issue tracker (e.g.
 >
 > Hi Arti team,
 >
-> We've been working on [tor-wasm](https://github.com/user/tor-wasm), a minimal Tor client written from scratch for `wasm32-unknown-unknown`. It implements ntor handshakes, 3-hop circuit building, onion encryption, and connects to the real Tor network from a browser tab. Along the way, we had to solve each of the 5 WASM blockers listed under this issue. We wanted to share what worked for us in case any of it is useful for Arti's WASM target.
+> We've been working on [tor-wasm](https://github.com/cmyocyte/tor-wasm), a minimal Tor client written from scratch for `wasm32-unknown-unknown`. It implements ntor handshakes, 3-hop circuit building, onion encryption, and connects to the real Tor network from a browser tab. Along the way, we had to solve each of the 5 WASM blockers listed under this issue. We wanted to share what worked for us in case any of it is useful for Arti's WASM target.
 >
 > **#339 (StateMgr / filesystem):** We replaced filesystem persistence with IndexedDB via `web-sys` bindings. Guard state, consensus, and relay descriptors all serialize to JSON and store in IndexedDB object stores. Guard state additionally uses `localStorage` for fast synchronous reads on bootstrap. The data model maps 1:1 from "file per state type" to "IndexedDB key per state type."
 >

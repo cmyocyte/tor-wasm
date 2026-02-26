@@ -10,19 +10,17 @@
 //! The volunteer proxy sees only encrypted bytes (TLS end-to-end).
 
 use futures::io::{AsyncRead, AsyncWrite};
+use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::io::{self, Result as IoResult};
 use std::pin::Pin;
 use std::rc::Rc;
-use std::cell::UnsafeCell;
 use std::task::{Context, Poll, Waker};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{
-    MessageEvent, RtcPeerConnection, RtcConfiguration,
-    RtcDataChannel, RtcDataChannelInit, RtcSessionDescriptionInit,
-    RtcSdpType, RtcIceCandidate, RtcIceCandidateInit,
-    RtcDataChannelEvent,
+    MessageEvent, RtcConfiguration, RtcDataChannel, RtcDataChannelEvent, RtcIceCandidate,
+    RtcIceCandidateInit, RtcPeerConnection, RtcSdpType, RtcSessionDescriptionInit,
 };
 
 /// Connection state for the WebRTC peer connection
@@ -89,27 +87,27 @@ impl WasmRtcStream {
     /// 3. Create answer, send back to proxy via broker
     /// 4. Wait for DataChannel to open
     /// 5. Send bridge URL + encrypted target as first message
-    pub async fn connect(
-        broker_url: &str,
-        bridge_url: &str,
-    ) -> IoResult<Self> {
+    pub async fn connect(broker_url: &str, bridge_url: &str) -> IoResult<Self> {
         log::info!("Connecting to peer bridge via broker: {}", broker_url);
 
         // Contact broker to get a proxy
-        let (proxy_offer, proxy_candidates, proxy_id) =
-            Self::request_proxy(broker_url).await?;
+        let (proxy_offer, proxy_candidates, proxy_id) = Self::request_proxy(broker_url).await?;
 
         // Create peer connection
         let config = RtcConfiguration::new();
         let ice_servers = js_sys::Array::new();
         let stun = js_sys::Object::new();
-        js_sys::Reflect::set(&stun, &"urls".into(), &"stun:stun.l.google.com:19302".into())
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to set STUN server"))?;
+        js_sys::Reflect::set(
+            &stun,
+            &"urls".into(),
+            &"stun:stun.l.google.com:19302".into(),
+        )
+        .map_err(|_| io::Error::other("Failed to set STUN server"))?;
         ice_servers.push(&stun);
         config.set_ice_servers(&ice_servers);
 
         let pc = RtcPeerConnection::new_with_configuration(&config)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("RtcPeerConnection::new failed: {:?}", e)))?;
+            .map_err(|e| io::Error::other(format!("RtcPeerConnection::new failed: {:?}", e)))?;
 
         let state = Rc::new(UnsafeCell::new(RtcStreamState::new()));
         let mut closures: Vec<Closure<dyn FnMut(JsValue)>> = Vec::new();
@@ -122,7 +120,7 @@ impl WasmRtcStream {
                 unsafe {
                     let st = &mut *state_clone.get();
                     if let Some(candidate) = event.candidate() {
-                        if let Ok(json) = js_sys::JSON::stringify(&candidate)  {
+                        if let Ok(json) = js_sys::JSON::stringify(&candidate) {
                             st.ice_candidates.push(json.as_string().unwrap_or_default());
                         }
                     } else {
@@ -144,7 +142,7 @@ impl WasmRtcStream {
         let set_remote = pc.set_remote_description(&remote_desc);
         wasm_bindgen_futures::JsFuture::from(set_remote)
             .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("setRemoteDescription failed: {:?}", e)))?;
+            .map_err(|e| io::Error::other(format!("setRemoteDescription failed: {:?}", e)))?;
 
         // Add proxy's ICE candidates
         for candidate_json in &proxy_candidates {
@@ -177,13 +175,13 @@ impl WasmRtcStream {
         // Create answer
         let answer = wasm_bindgen_futures::JsFuture::from(pc.create_answer())
             .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("createAnswer failed: {:?}", e)))?;
+            .map_err(|e| io::Error::other(format!("createAnswer failed: {:?}", e)))?;
 
         let answer_desc: RtcSessionDescriptionInit = answer.unchecked_into();
         let set_local = pc.set_local_description(&answer_desc);
         wasm_bindgen_futures::JsFuture::from(set_local)
             .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("setLocalDescription failed: {:?}", e)))?;
+            .map_err(|e| io::Error::other(format!("setLocalDescription failed: {:?}", e)))?;
 
         // Wait for ICE gathering
         {
@@ -196,12 +194,14 @@ impl WasmRtcStream {
                     st.ice_waker = Some(cx.waker().clone());
                     Poll::Pending
                 }
-            }).await;
+            })
+            .await;
         }
 
         // Get our SDP answer and ICE candidates
-        let local_desc = pc.local_description()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No local description after createAnswer"))?;
+        let local_desc = pc
+            .local_description()
+            .ok_or_else(|| io::Error::other("No local description after createAnswer"))?;
         let sdp_answer = local_desc.sdp();
         let our_candidates: Vec<String> = unsafe { (*state.get()).ice_candidates.clone() };
 
@@ -219,11 +219,7 @@ impl WasmRtcStream {
             let cb = Closure::wrap(Box::new(move |event: JsValue| {
                 let event: RtcDataChannelEvent = event.unchecked_into();
                 let channel = event.channel();
-                let _ = js_sys::Reflect::set(
-                    &channel,
-                    &"binaryType".into(),
-                    &"arraybuffer".into(),
-                );
+                let _ = js_sys::Reflect::set(&channel, &"binaryType".into(), &"arraybuffer".into());
 
                 // Set up data handlers on the received channel
                 let state_for_msg = state_clone.clone();
@@ -309,8 +305,9 @@ impl WasmRtcStream {
 
         // Get the data channel
         let dc = unsafe {
-            (*dc_ready_clone.get()).take()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No DataChannel received"))?
+            (*dc_ready_clone.get())
+                .take()
+                .ok_or_else(|| io::Error::other("No DataChannel received"))?
         };
 
         // Send bridge URL as first message so proxy knows where to connect
@@ -318,7 +315,7 @@ impl WasmRtcStream {
         let array = js_sys::Uint8Array::new_with_length(bridge_msg.len() as u32);
         array.copy_from(bridge_msg);
         dc.send_with_array_buffer(&array.buffer())
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to send bridge URL: {:?}", e)))?;
+            .map_err(|e| io::Error::other(format!("Failed to send bridge URL: {:?}", e)))?;
 
         log::info!("WebRTC peer bridge connected successfully");
 
@@ -334,8 +331,12 @@ impl WasmRtcStream {
     /// Returns (sdp_offer, ice_candidates, proxy_id).
     async fn request_proxy(broker_url: &str) -> IoResult<(String, Vec<String>, String)> {
         // Connect to broker via WebSocket
-        let ws = web_sys::WebSocket::new(broker_url)
-            .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, format!("Broker connect failed: {:?}", e)))?;
+        let ws = web_sys::WebSocket::new(broker_url).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                format!("Broker connect failed: {:?}", e),
+            )
+        })?;
         ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
         let result: Rc<UnsafeCell<Option<IoResult<(String, Vec<String>, String)>>>> =
@@ -365,16 +366,20 @@ impl WasmRtcStream {
                         let msg_type = msg["type"].as_str().unwrap_or("");
                         match msg_type {
                             "matched" => {
-                                let offer = msg["sdp_offer"]["sdp"].as_str()
-                                    .unwrap_or_default().to_string();
+                                let offer = msg["sdp_offer"]["sdp"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_string();
                                 let candidates: Vec<String> = msg["ice_candidates"]
                                     .as_array()
-                                    .map(|arr| arr.iter()
-                                        .map(|c| serde_json::to_string(c).unwrap_or_default())
-                                        .collect())
+                                    .map(|arr| {
+                                        arr.iter()
+                                            .map(|c| serde_json::to_string(c).unwrap_or_default())
+                                            .collect()
+                                    })
                                     .unwrap_or_default();
-                                let proxy_id = msg["proxy_id"].as_str()
-                                    .unwrap_or_default().to_string();
+                                let proxy_id =
+                                    msg["proxy_id"].as_str().unwrap_or_default().to_string();
 
                                 unsafe {
                                     *result_clone.get() = Some(Ok((offer, candidates, proxy_id)));
@@ -383,17 +388,15 @@ impl WasmRtcStream {
                                     }
                                 }
                             }
-                            "no_proxies" => {
-                                unsafe {
-                                    *result_clone.get() = Some(Err(io::Error::new(
-                                        io::ErrorKind::NotConnected,
-                                        "No volunteer proxies available",
-                                    )));
-                                    if let Some(w) = (*waker_clone.get()).take() {
-                                        w.wake();
-                                    }
+                            "no_proxies" => unsafe {
+                                *result_clone.get() = Some(Err(io::Error::new(
+                                    io::ErrorKind::NotConnected,
+                                    "No volunteer proxies available",
+                                )));
+                                if let Some(w) = (*waker_clone.get()).take() {
+                                    w.wake();
                                 }
-                            }
+                            },
                             _ => {}
                         }
                     }
@@ -408,15 +411,13 @@ impl WasmRtcStream {
         {
             let result_clone = result.clone();
             let waker_clone = waker.clone();
-            let cb = Closure::wrap(Box::new(move |_: JsValue| {
-                unsafe {
-                    *result_clone.get() = Some(Err(io::Error::new(
-                        io::ErrorKind::ConnectionRefused,
-                        "Broker connection failed",
-                    )));
-                    if let Some(w) = (*waker_clone.get()).take() {
-                        w.wake();
-                    }
+            let cb = Closure::wrap(Box::new(move |_: JsValue| unsafe {
+                *result_clone.get() = Some(Err(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "Broker connection failed",
+                )));
+                if let Some(w) = (*waker_clone.get()).take() {
+                    w.wake();
                 }
             }) as Box<dyn FnMut(JsValue)>);
             ws.set_onerror(Some(cb.as_ref().unchecked_ref()));
@@ -431,14 +432,18 @@ impl WasmRtcStream {
             if val.is_some() {
                 Poll::Ready(())
             } else {
-                unsafe { *waker_clone.get() = Some(cx.waker().clone()); }
+                unsafe {
+                    *waker_clone.get() = Some(cx.waker().clone());
+                }
                 Poll::Pending
             }
-        }).await;
+        })
+        .await;
 
         unsafe {
-            (*result.get()).take()
-                .unwrap_or_else(|| Err(io::Error::new(io::ErrorKind::Other, "No result from broker")))
+            (*result.get())
+                .take()
+                .unwrap_or_else(|| Err(io::Error::other("No result from broker")))
         }
     }
 
@@ -449,13 +454,18 @@ impl WasmRtcStream {
         sdp_answer: &str,
         ice_candidates: &[String],
     ) -> IoResult<()> {
-        let ws = web_sys::WebSocket::new(broker_url)
-            .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, format!("Broker reconnect failed: {:?}", e)))?;
+        let ws = web_sys::WebSocket::new(broker_url).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                format!("Broker reconnect failed: {:?}", e),
+            )
+        })?;
 
         let done: Rc<UnsafeCell<bool>> = Rc::new(UnsafeCell::new(false));
         let done_waker: Rc<UnsafeCell<Option<Waker>>> = Rc::new(UnsafeCell::new(None));
 
-        let candidates_json: Vec<serde_json::Value> = ice_candidates.iter()
+        let candidates_json: Vec<serde_json::Value> = ice_candidates
+            .iter()
             .filter_map(|c| serde_json::from_str(c).ok())
             .collect();
 
@@ -464,7 +474,8 @@ impl WasmRtcStream {
             "proxy_id": proxy_id,
             "sdp_answer": sdp_answer,
             "ice_candidates": candidates_json,
-        }).to_string();
+        })
+        .to_string();
 
         {
             let done_clone = done.clone();
@@ -490,10 +501,13 @@ impl WasmRtcStream {
             if unsafe { *done_clone.get() } {
                 Poll::Ready(Ok(()))
             } else {
-                unsafe { *done_waker_clone.get() = Some(cx.waker().clone()); }
+                unsafe {
+                    *done_waker_clone.get() = Some(cx.waker().clone());
+                }
                 Poll::Pending
             }
-        }).await
+        })
+        .await
     }
 }
 
@@ -508,7 +522,7 @@ impl AsyncRead for WasmRtcStream {
         let st = unsafe { &mut *self.state.get() };
 
         if let Some(ref err) = st.error {
-            return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, err.clone())));
+            return Poll::Ready(Err(io::Error::other(err.clone())));
         }
 
         if !st.recv_buffer.is_empty() {
@@ -529,15 +543,11 @@ impl AsyncRead for WasmRtcStream {
 }
 
 impl AsyncWrite for WasmRtcStream {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<IoResult<usize>> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<IoResult<usize>> {
         let st = unsafe { &mut *self.state.get() };
 
         if let Some(ref err) = st.error {
-            return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, err.clone())));
+            return Poll::Ready(Err(io::Error::other(err.clone())));
         }
 
         if st.state != RtcState::Connected {

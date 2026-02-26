@@ -5,15 +5,17 @@
 //! This defeats CreepJS's iframe extraction attack where it creates a
 //! fresh iframe to get "untampered" API values.
 
+use super::profile::DefenseConfig;
+use js_sys::{Array, Function, Reflect};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use js_sys::{Array, Reflect, Function};
-use super::profile::DefenseConfig;
 
 /// Start observing the DOM for iframe insertions.
 pub fn start_iframe_protection(config: &DefenseConfig) -> Result<(), JsValue> {
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
-    let document = window.document().ok_or_else(|| JsValue::from_str("no document"))?;
+    let document = window
+        .document()
+        .ok_or_else(|| JsValue::from_str("no document"))?;
 
     // Patch existing iframes
     patch_existing_iframes(&document)?;
@@ -48,8 +50,9 @@ pub fn start_iframe_protection(config: &DefenseConfig) -> Result<(), JsValue> {
             var obs = new MutationObserver(callback); \
             obs.observe(document.documentElement, { childList: true, subtree: true }); \
             return obs; \
-        })"
-    )?.unchecked_into();
+        })",
+    )?
+    .unchecked_into();
 
     let _observer = Reflect::apply(
         &create_observer,
@@ -118,7 +121,8 @@ fn patch_iframe_on_load(iframe: &JsValue) {
         }
     }) as Box<dyn FnMut(JsValue)>);
 
-    let add_listener: Result<JsValue, _> = Reflect::get(iframe, &JsValue::from_str("addEventListener"));
+    let add_listener: Result<JsValue, _> =
+        Reflect::get(iframe, &JsValue::from_str("addEventListener"));
     if let Ok(ael) = add_listener {
         if ael.is_function() {
             let ael_fn: &Function = ael.unchecked_ref();
@@ -164,22 +168,25 @@ fn intercept_create_element(_config: &DefenseConfig) -> Result<(), JsValue> {
     let orig_fn = orig_create.clone();
     let doc_ref = document.clone();
 
-    let apply_trap = Closure::wrap(Box::new(move |_target: JsValue, _this: JsValue, args: JsValue| -> Result<JsValue, JsValue> {
-        let result = super::proxy_helpers::call_function(&orig_fn, &doc_ref, &args)?;
+    let apply_trap = Closure::wrap(Box::new(
+        move |_target: JsValue, _this: JsValue, args: JsValue| -> Result<JsValue, JsValue> {
+            let result = super::proxy_helpers::call_function(&orig_fn, &doc_ref, &args)?;
 
-        // Check if we're creating an iframe
-        let args_arr: &Array = args.unchecked_ref();
-        if args_arr.length() >= 1 {
-            if let Some(tag) = args_arr.get(0).as_string() {
-                let tag_upper = tag.to_uppercase();
-                if tag_upper == "IFRAME" || tag_upper == "FRAME" {
-                    patch_iframe_on_load(&result);
+            // Check if we're creating an iframe
+            let args_arr: &Array = args.unchecked_ref();
+            if args_arr.length() >= 1 {
+                if let Some(tag) = args_arr.get(0).as_string() {
+                    let tag_upper = tag.to_uppercase();
+                    if tag_upper == "IFRAME" || tag_upper == "FRAME" {
+                        patch_iframe_on_load(&result);
+                    }
                 }
             }
-        }
 
-        Ok(result)
-    }) as Box<dyn FnMut(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>);
+            Ok(result)
+        },
+    )
+        as Box<dyn FnMut(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>);
 
     let proxied = super::proxy_helpers::proxy_function_with_apply(&orig_create, apply_trap)?;
     Reflect::set(&document, &JsValue::from_str("createElement"), &proxied)?;

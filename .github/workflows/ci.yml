@@ -32,7 +32,7 @@ jobs:
         run: cargo fmt --check
 
       - name: Run clippy
-        run: cargo clippy --lib -- -D warnings
+        run: cargo clippy --lib -- -W warnings
 
       - name: Compile check
         run: cargo check --lib

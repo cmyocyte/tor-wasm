@@ -20,11 +20,45 @@
 //!   - created_at: timestamp of first credential
 //!   - last_use: timestamp of last bridge use
 
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{Request, RequestInit, RequestMode, Response, Headers};
-use serde::{Serialize, Deserialize};
+use web_sys::{Request, RequestInit, RequestMode, Response};
+
+/// Convert an IdbRequest into a JS Promise (onsuccess/onerror).
+fn idb_request_to_promise(req: &web_sys::IdbRequest) -> js_sys::Promise {
+    js_sys::Promise::new(&mut |resolve, reject| {
+        let on_success = Closure::once(move |event: web_sys::Event| {
+            let target = event.target().unwrap();
+            let req: web_sys::IdbRequest = target.dyn_into().unwrap();
+            let _ = resolve.call1(&JsValue::NULL, &req.result().unwrap_or(JsValue::UNDEFINED));
+        });
+        let on_error = Closure::once(move |_event: web_sys::Event| {
+            let _ = reject.call1(&JsValue::NULL, &JsValue::from_str("IDB request failed"));
+        });
+        req.set_onsuccess(Some(on_success.as_ref().unchecked_ref()));
+        req.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+        on_success.forget();
+        on_error.forget();
+    })
+}
+
+/// Convert an IdbTransaction completion into a JS Promise.
+fn idb_transaction_to_promise(tx: &web_sys::IdbTransaction) -> js_sys::Promise {
+    js_sys::Promise::new(&mut |resolve, reject| {
+        let on_complete = Closure::once(move |_event: web_sys::Event| {
+            let _ = resolve.call0(&JsValue::NULL);
+        });
+        let on_error = Closure::once(move |_event: web_sys::Event| {
+            let _ = reject.call1(&JsValue::NULL, &JsValue::from_str("IDB transaction failed"));
+        });
+        tx.set_oncomplete(Some(on_complete.as_ref().unchecked_ref()));
+        tx.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+        on_complete.forget();
+        on_error.forget();
+    })
+}
 
 /// Stored Lox credential (persisted in IndexedDB)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,17 +113,20 @@ impl LoxClient {
         let url = format!("{}/lox/open-invite", self.authority_url);
         let resp = self.post_json(&url, "{}").await?;
 
-        let id = resp.get("id")
+        let id = resp
+            .get("id")
             .and_then(|v| v.as_str())
             .ok_or("missing id in response")?
             .to_string();
 
-        let credential = resp.get("credential")
+        let credential = resp
+            .get("credential")
             .and_then(|v| v.as_str())
             .ok_or("missing credential in response")?
             .to_string();
 
-        let trust_level = resp.get("trust_level")
+        let trust_level = resp
+            .get("trust_level")
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32;
 
@@ -118,21 +155,25 @@ impl LoxClient {
         let body = serde_json::json!({
             "id": cred.id,
             "credential": cred.credential,
-        }).to_string();
+        })
+        .to_string();
 
         let resp = self.post_json(&url, &body).await?;
 
-        let bridge_url = resp.get("bridge_url")
+        let bridge_url = resp
+            .get("bridge_url")
             .and_then(|v| v.as_str())
             .ok_or("missing bridge_url")?
             .to_string();
 
-        let fingerprint = resp.get("bridge_fingerprint")
+        let fingerprint = resp
+            .get("bridge_fingerprint")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
 
-        let trust_level = resp.get("trust_level")
+        let trust_level = resp
+            .get("trust_level")
             .and_then(|v| v.as_u64())
             .unwrap_or(cred.trust_level as u64) as u32;
 
@@ -158,7 +199,8 @@ impl LoxClient {
         let body = serde_json::json!({
             "id": cred.id,
             "credential": cred.credential,
-        }).to_string();
+        })
+        .to_string();
 
         let resp = self.post_json(&url, &body).await?;
 
@@ -166,11 +208,13 @@ impl LoxClient {
             return Err(format!("migration failed: {}", err));
         }
 
-        let new_level = resp.get("trust_level")
+        let new_level = resp
+            .get("trust_level")
             .and_then(|v| v.as_u64())
             .ok_or("missing trust_level")? as u32;
 
-        let new_credential = resp.get("credential")
+        let new_credential = resp
+            .get("credential")
             .and_then(|v| v.as_str())
             .ok_or("missing credential")?
             .to_string();
@@ -198,19 +242,23 @@ impl LoxClient {
             "id": cred.id,
             "credential": cred.credential,
             "bridge_fingerprint": bridge_fingerprint,
-        }).to_string();
+        })
+        .to_string();
 
         let resp = self.post_json(&url, &body).await?;
 
-        let blocked = resp.get("blocked")
+        let blocked = resp
+            .get("blocked")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
-        let migration_token = resp.get("migration_token")
+        let migration_token = resp
+            .get("migration_token")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let trust_level = resp.get("trust_level")
+        let trust_level = resp
+            .get("trust_level")
             .and_then(|v| v.as_u64())
             .unwrap_or(cred.trust_level as u64) as u32;
 
@@ -221,7 +269,10 @@ impl LoxClient {
 
         self.store_credential(cred).await?;
 
-        log::info!("Lox: reported blockage, trust level preserved at {}", trust_level);
+        log::info!(
+            "Lox: reported blockage, trust level preserved at {}",
+            trust_level
+        );
 
         Ok(BlockageResult {
             blocked,
@@ -243,12 +294,11 @@ impl LoxClient {
             .open(IDB_DB_NAME)
             .map_err(|e| format!("open failed: {:?}", e))?;
 
-        let db = JsFuture::from(wasm_bindgen_futures::js_sys_ext::idb_request_to_promise(&open_req))
+        let db = JsFuture::from(idb_request_to_promise(&open_req))
             .await
             .map_err(|e| format!("open await: {:?}", e))?;
 
-        let db: web_sys::IdbDatabase = db.dyn_into()
-            .map_err(|_| "not an IdbDatabase")?;
+        let db: web_sys::IdbDatabase = db.dyn_into().map_err(|_| "not an IdbDatabase")?;
 
         // Check if store exists
         let store_names = db.object_store_names();
@@ -280,7 +330,7 @@ impl LoxClient {
             .get(&JsValue::from_str(CREDENTIAL_KEY))
             .map_err(|e| format!("get failed: {:?}", e))?;
 
-        let result = JsFuture::from(wasm_bindgen_futures::js_sys_ext::idb_request_to_promise(&get_req))
+        let result = JsFuture::from(idb_request_to_promise(&get_req))
             .await
             .map_err(|e| format!("get await: {:?}", e))?;
 
@@ -290,8 +340,8 @@ impl LoxClient {
             return Ok(None);
         }
 
-        let cred: LoxCredential = serde_wasm_bindgen::from_value(result)
-            .map_err(|e| format!("deserialize: {:?}", e))?;
+        let cred: LoxCredential =
+            serde_wasm_bindgen::from_value(result).map_err(|e| format!("deserialize: {:?}", e))?;
 
         Ok(Some(cred))
     }
@@ -321,7 +371,7 @@ impl LoxClient {
                 .dyn_into()
                 .unwrap();
 
-            if !db.object_store_names().contains(&IDB_STORE_NAME.into()) {
+            if !db.object_store_names().contains(IDB_STORE_NAME) {
                 let _ = db.create_object_store(IDB_STORE_NAME);
             }
         });
@@ -329,12 +379,11 @@ impl LoxClient {
         open_req.set_onupgradeneeded(Some(on_upgrade.as_ref().unchecked_ref()));
         on_upgrade.forget(); // leak to keep alive during async operation
 
-        let db = JsFuture::from(wasm_bindgen_futures::js_sys_ext::idb_request_to_promise(&open_req))
+        let db = JsFuture::from(idb_request_to_promise(&open_req))
             .await
             .map_err(|e| format!("open await: {:?}", e))?;
 
-        let db: web_sys::IdbDatabase = db.dyn_into()
-            .map_err(|_| "not an IdbDatabase")?;
+        let db: web_sys::IdbDatabase = db.dyn_into().map_err(|_| "not an IdbDatabase")?;
 
         // Write credential
         let tx = db
@@ -345,27 +394,22 @@ impl LoxClient {
             .object_store(IDB_STORE_NAME)
             .map_err(|e| format!("store failed: {:?}", e))?;
 
-        let value = serde_wasm_bindgen::to_value(cred)
-            .map_err(|e| format!("serialize: {:?}", e))?;
+        let value =
+            serde_wasm_bindgen::to_value(cred).map_err(|e| format!("serialize: {:?}", e))?;
 
         store
             .put_with_key(&value, &JsValue::from_str(CREDENTIAL_KEY))
             .map_err(|e| format!("put failed: {:?}", e))?;
 
         // Wait for transaction to complete
-        let _ = JsFuture::from(wasm_bindgen_futures::js_sys_ext::idb_transaction_to_promise(&tx))
-            .await;
+        let _ = JsFuture::from(idb_transaction_to_promise(&tx)).await;
 
         db.close();
         Ok(())
     }
 
     /// Helper: POST JSON to a URL and parse the response.
-    async fn post_json(
-        &self,
-        url: &str,
-        body: &str,
-    ) -> Result<serde_json::Value, String> {
+    async fn post_json(&self, url: &str, body: &str) -> Result<serde_json::Value, String> {
         let opts = RequestInit::new();
         opts.set_method("POST");
         opts.set_mode(RequestMode::Cors);
@@ -374,7 +418,8 @@ impl LoxClient {
         let request = Request::new_with_str_and_init(url, &opts)
             .map_err(|e| format!("Request::new: {:?}", e))?;
 
-        request.headers()
+        request
+            .headers()
             .set("Content-Type", "application/json")
             .map_err(|e| format!("set header: {:?}", e))?;
 
@@ -383,13 +428,11 @@ impl LoxClient {
             .await
             .map_err(|e| format!("fetch: {:?}", e))?;
 
-        let resp: Response = resp_value.dyn_into()
-            .map_err(|_| "not a Response")?;
+        let resp: Response = resp_value.dyn_into().map_err(|_| "not a Response")?;
 
-        let text = JsFuture::from(
-            resp.text().map_err(|e| format!("text(): {:?}", e))?
-        ).await
-        .map_err(|e| format!("await text: {:?}", e))?;
+        let text = JsFuture::from(resp.text().map_err(|e| format!("text(): {:?}", e))?)
+            .await
+            .map_err(|e| format!("await text: {:?}", e))?;
 
         let text_str = text.as_string().ok_or("response not a string")?;
 
@@ -397,8 +440,7 @@ impl LoxClient {
             return Err(format!("HTTP {}: {}", resp.status(), text_str));
         }
 
-        serde_json::from_str(&text_str)
-            .map_err(|e| format!("JSON parse: {}", e))
+        serde_json::from_str(&text_str).map_err(|e| format!("JSON parse: {}", e))
     }
 }
 
@@ -410,7 +452,8 @@ pub fn days_until_migration(cred: &LoxCredential) -> f64 {
         return f64::INFINITY; // Already at max
     }
 
-    let days_since_creation = (js_sys::Date::now() - cred.created_at) / (24.0 * 60.0 * 60.0 * 1000.0);
+    let days_since_creation =
+        (js_sys::Date::now() - cred.created_at) / (24.0 * 60.0 * 60.0 * 1000.0);
     let needed = thresholds[next_level];
     (needed - days_since_creation).max(0.0)
 }

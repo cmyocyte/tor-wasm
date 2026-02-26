@@ -2,10 +2,10 @@
 //!
 //! Reports standard 1920x1080 dimensions for all tor-wasm users.
 
-use wasm_bindgen::prelude::*;
-use js_sys::Reflect;
 use super::profile::NormalizedProfile;
 use super::proxy_helpers;
+use js_sys::Reflect;
+use wasm_bindgen::prelude::*;
 
 pub fn apply() -> Result<(), JsValue> {
     let global = js_sys::global();
@@ -25,7 +25,10 @@ pub fn apply_to_screen(screen: &JsValue) -> Result<(), JsValue> {
         ("width", NormalizedProfile::SCREEN_WIDTH as f64),
         ("height", NormalizedProfile::SCREEN_HEIGHT as f64),
         ("availWidth", NormalizedProfile::SCREEN_WIDTH as f64),
-        ("availHeight", NormalizedProfile::SCREEN_HEIGHT as f64 - 40.0), // taskbar
+        (
+            "availHeight",
+            NormalizedProfile::SCREEN_HEIGHT as f64 - 40.0,
+        ), // taskbar
         ("colorDepth", NormalizedProfile::SCREEN_COLOR_DEPTH as f64),
         ("pixelDepth", NormalizedProfile::SCREEN_PIXEL_DEPTH as f64),
         ("availLeft", 0.0),
@@ -34,9 +37,9 @@ pub fn apply_to_screen(screen: &JsValue) -> Result<(), JsValue> {
 
     for (prop, value) in screen_props {
         let val = *value;
-        let getter = Closure::wrap(Box::new(move || -> JsValue {
-            JsValue::from_f64(val)
-        }) as Box<dyn FnMut() -> JsValue>);
+        let getter =
+            Closure::wrap(Box::new(move || -> JsValue { JsValue::from_f64(val) })
+                as Box<dyn FnMut() -> JsValue>);
         proxy_helpers::patch_getter(screen, prop, getter)?;
     }
 
@@ -50,7 +53,10 @@ pub fn apply_to_window(window: &JsValue) -> Result<(), JsValue> {
         ("outerWidth", NormalizedProfile::SCREEN_WIDTH as f64),
         ("outerHeight", NormalizedProfile::SCREEN_HEIGHT as f64),
         ("innerWidth", NormalizedProfile::SCREEN_WIDTH as f64),
-        ("innerHeight", NormalizedProfile::SCREEN_HEIGHT as f64 - 80.0),
+        (
+            "innerHeight",
+            NormalizedProfile::SCREEN_HEIGHT as f64 - 80.0,
+        ),
         ("screenX", 0.0),
         ("screenY", 0.0),
         ("screenLeft", 0.0),
@@ -59,9 +65,9 @@ pub fn apply_to_window(window: &JsValue) -> Result<(), JsValue> {
 
     for (prop, value) in window_props {
         let val = *value;
-        let getter = Closure::wrap(Box::new(move || -> JsValue {
-            JsValue::from_f64(val)
-        }) as Box<dyn FnMut() -> JsValue>);
+        let getter =
+            Closure::wrap(Box::new(move || -> JsValue { JsValue::from_f64(val) })
+                as Box<dyn FnMut() -> JsValue>);
         proxy_helpers::patch_getter(window, prop, getter)?;
     }
 

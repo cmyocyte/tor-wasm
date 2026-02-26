@@ -13,16 +13,16 @@
 //! standard HTTP request/response. Defeats WebSocket-based blocking.
 
 use futures::io::{AsyncRead, AsyncWrite};
+use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::io::{self, Result as IoResult};
 use std::pin::Pin;
 use std::rc::Rc;
-use std::cell::UnsafeCell;
 use std::task::{Context, Poll, Waker};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{Request, RequestInit, RequestMode, Response, Headers};
+use web_sys::{Request, RequestInit, RequestMode, Response};
 
 /// State of the meek connection
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -72,7 +72,7 @@ pub struct WasmMeekStream {
 const MEEK_POLL_INTERVAL: u32 = 100;
 
 /// Maximum send buffer size before flush
-const MEEK_FLUSH_THRESHOLD: usize = 514;  // One Tor cell
+const MEEK_FLUSH_THRESHOLD: usize = 514; // One Tor cell
 
 impl WasmMeekStream {
     /// Connect to a Tor relay through a meek bridge.
@@ -122,10 +122,7 @@ impl WasmMeekStream {
     /// Generate a random session ID (16 hex chars)
     fn generate_session_id() -> String {
         let mut bytes = [0u8; 8];
-        if let Ok(crypto) = web_sys::window()
-            .and_then(|w| w.crypto().ok())
-            .ok_or(())
-        {
+        if let Ok(crypto) = web_sys::window().and_then(|w| w.crypto().ok()).ok_or(()) {
             let _ = crypto.get_random_values_with_u8_array(&mut bytes);
         } else {
             // Fallback: use performance.now() as entropy
@@ -149,22 +146,25 @@ impl WasmMeekStream {
             .map_err(|e| format!("Request::new failed: {:?}", e))?;
 
         let headers = request.headers();
-        headers.set("X-Session-Id", &self.session_id)
+        headers
+            .set("X-Session-Id", &self.session_id)
             .map_err(|e| format!("set header failed: {:?}", e))?;
-        headers.set("X-Target", &self.target)
+        headers
+            .set("X-Target", &self.target)
             .map_err(|e| format!("set header failed: {:?}", e))?;
-        headers.set("Content-Type", "application/octet-stream")
+        headers
+            .set("Content-Type", "application/octet-stream")
             .map_err(|e| format!("set header failed: {:?}", e))?;
 
         // Perform fetch
-        let window = web_sys::window()
-            .ok_or_else(|| "no window object".to_string())?;
+        let window = web_sys::window().ok_or_else(|| "no window object".to_string())?;
 
         let resp_value = JsFuture::from(window.fetch_with_request(&request))
             .await
             .map_err(|e| format!("fetch failed: {:?}", e))?;
 
-        let resp: Response = resp_value.dyn_into()
+        let resp: Response = resp_value
+            .dyn_into()
             .map_err(|_| "response is not a Response".to_string())?;
 
         if !resp.ok() {
@@ -174,8 +174,9 @@ impl WasmMeekStream {
         // Read response body
         let array_buffer = JsFuture::from(
             resp.array_buffer()
-                .map_err(|e| format!("array_buffer failed: {:?}", e))?
-        ).await
+                .map_err(|e| format!("array_buffer failed: {:?}", e))?,
+        )
+        .await
         .map_err(|e| format!("await array_buffer failed: {:?}", e))?;
 
         let uint8_array = js_sys::Uint8Array::new(&array_buffer);
@@ -208,7 +209,11 @@ impl WasmMeekStream {
             let tgt = target.clone();
 
             wasm_bindgen_futures::spawn_local(async move {
-                let stream = WasmMeekStreamHelper { bridge_url: url, session_id: sid, target: tgt };
+                let stream = WasmMeekStreamHelper {
+                    bridge_url: url,
+                    session_id: sid,
+                    target: tgt,
+                };
                 match stream.do_exchange(&send_data).await {
                     Ok(data) => {
                         let s = unsafe { &mut *state_inner.get() };
@@ -262,21 +267,24 @@ impl WasmMeekStreamHelper {
             .map_err(|e| format!("Request::new failed: {:?}", e))?;
 
         let headers = request.headers();
-        headers.set("X-Session-Id", &self.session_id)
+        headers
+            .set("X-Session-Id", &self.session_id)
             .map_err(|_| "set header failed".to_string())?;
-        headers.set("X-Target", &self.target)
+        headers
+            .set("X-Target", &self.target)
             .map_err(|_| "set header failed".to_string())?;
-        headers.set("Content-Type", "application/octet-stream")
+        headers
+            .set("Content-Type", "application/octet-stream")
             .map_err(|_| "set header failed".to_string())?;
 
-        let window = web_sys::window()
-            .ok_or_else(|| "no window".to_string())?;
+        let window = web_sys::window().ok_or_else(|| "no window".to_string())?;
 
         let resp_value = JsFuture::from(window.fetch_with_request(&request))
             .await
             .map_err(|e| format!("fetch failed: {:?}", e))?;
 
-        let resp: Response = resp_value.dyn_into()
+        let resp: Response = resp_value
+            .dyn_into()
             .map_err(|_| "not a Response".to_string())?;
 
         if !resp.ok() {
@@ -284,8 +292,10 @@ impl WasmMeekStreamHelper {
         }
 
         let array_buffer = JsFuture::from(
-            resp.array_buffer().map_err(|e| format!("array_buffer: {:?}", e))?
-        ).await
+            resp.array_buffer()
+                .map_err(|e| format!("array_buffer: {:?}", e))?,
+        )
+        .await
         .map_err(|e| format!("await: {:?}", e))?;
 
         let uint8_array = js_sys::Uint8Array::new(&array_buffer);
@@ -315,7 +325,10 @@ impl AsyncRead for WasmMeekStream {
         match state.state {
             MeekState::Closed => {
                 if let Some(ref e) = state.error {
-                    Poll::Ready(Err(io::Error::new(io::ErrorKind::ConnectionReset, e.clone())))
+                    Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::ConnectionReset,
+                        e.clone(),
+                    )))
                 } else {
                     Poll::Ready(Ok(0)) // EOF
                 }
@@ -337,12 +350,10 @@ impl AsyncWrite for WasmMeekStream {
         let state = unsafe { &mut *self.state.get() };
 
         match state.state {
-            MeekState::Closed => {
-                Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    state.error.as_deref().unwrap_or("connection closed"),
-                )))
-            }
+            MeekState::Closed => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                state.error.as_deref().unwrap_or("connection closed"),
+            ))),
             _ => {
                 state.send_buffer.extend(buf.iter());
                 Poll::Ready(Ok(buf.len()))

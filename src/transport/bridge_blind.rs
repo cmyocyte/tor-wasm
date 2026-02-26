@@ -6,13 +6,13 @@
 //!
 //! This ensures no single bridge operator can correlate client IP with guard relay IP.
 
-use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret};
+use aes_gcm::aead::Aead;
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use hkdf::Hkdf;
 use sha2::Sha256;
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-use aes_gcm::aead::Aead;
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret};
 
 /// Info string for HKDF key derivation (domain separation)
 const HKDF_INFO: &[u8] = b"tor-wasm-bridge-blind-v1";
@@ -44,10 +44,11 @@ pub fn blind_target_address(
         .map_err(|_| "HKDF expand failed".to_string())?;
 
     // Encrypt the relay address with AES-256-GCM
-    let cipher = Aes256Gcm::new_from_slice(&aes_key)
-        .map_err(|e| format!("AES key init failed: {}", e))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&aes_key).map_err(|e| format!("AES key init failed: {}", e))?;
     let nonce = Nonce::from_slice(FIXED_NONCE);
-    let ciphertext = cipher.encrypt(nonce, relay_addr.as_bytes())
+    let ciphertext = cipher
+        .encrypt(nonce, relay_addr.as_bytes())
         .map_err(|e| format!("AES-GCM encrypt failed: {}", e))?;
 
     // Concatenate: ephemeral_pubkey (32) || ciphertext (variable + 16 byte tag)
@@ -69,7 +70,8 @@ mod tests {
         blob_b64: &str,
         bridge_b_secret: &StaticSecret,
     ) -> Result<String, String> {
-        let blob = URL_SAFE_NO_PAD.decode(blob_b64)
+        let blob = URL_SAFE_NO_PAD
+            .decode(blob_b64)
             .map_err(|e| format!("base64 decode failed: {}", e))?;
 
         if blob.len() < 32 + 16 {
@@ -94,11 +96,11 @@ mod tests {
         let cipher = Aes256Gcm::new_from_slice(&aes_key)
             .map_err(|e| format!("AES key init failed: {}", e))?;
         let nonce = Nonce::from_slice(FIXED_NONCE);
-        let plaintext = cipher.decrypt(nonce, &blob[32..])
+        let plaintext = cipher
+            .decrypt(nonce, &blob[32..])
             .map_err(|e| format!("AES-GCM decrypt failed: {}", e))?;
 
-        String::from_utf8(plaintext)
-            .map_err(|e| format!("UTF-8 decode failed: {}", e))
+        String::from_utf8(plaintext).map_err(|e| format!("UTF-8 decode failed: {}", e))
     }
 
     #[test]
@@ -114,8 +116,8 @@ mod tests {
             .expect("encryption should succeed");
 
         // Bridge B decrypts
-        let decrypted = decrypt_blinded_address(&blob, &bridge_b_secret)
-            .expect("decryption should succeed");
+        let decrypted =
+            decrypt_blinded_address(&blob, &bridge_b_secret).expect("decryption should succeed");
 
         assert_eq!(decrypted, relay_addr);
     }
@@ -141,7 +143,12 @@ mod tests {
         let bridge_b_secret = StaticSecret::random_from_rng(&mut rand::thread_rng());
         let bridge_b_public = PublicKey::from(&bridge_b_secret);
 
-        for addr in &["1.2.3.4:9001", "192.0.2.1:443", "[::1]:9050", "relay.example.com:9001"] {
+        for addr in &[
+            "1.2.3.4:9001",
+            "192.0.2.1:443",
+            "[::1]:9050",
+            "relay.example.com:9001",
+        ] {
             let blob = blind_target_address(addr, bridge_b_public.as_bytes())
                 .expect("encryption should succeed");
             let decrypted = decrypt_blinded_address(&blob, &bridge_b_secret)

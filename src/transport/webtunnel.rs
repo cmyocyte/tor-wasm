@@ -20,12 +20,12 @@
 use futures::io::{AsyncRead, AsyncWrite};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::fmt::Write as FmtWrite;
 use std::io::{self, Result as IoResult};
 use std::pin::Pin;
 use std::rc::Rc;
-use std::cell::UnsafeCell;
 use std::task::{Context, Poll, Waker};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -47,8 +47,8 @@ fn compute_hmac_challenge(secret_path: &str) -> String {
     let timestamp = (js_sys::Date::now() / 1000.0) as u64;
     let ts_str = timestamp.to_string();
 
-    let mut mac = HmacSha256::new_from_slice(secret_path.as_bytes())
-        .expect("HMAC accepts any key length");
+    let mut mac =
+        HmacSha256::new_from_slice(secret_path.as_bytes()).expect("HMAC accepts any key length");
     mac.update(ts_str.as_bytes());
     let result = mac.finalize().into_bytes();
 
@@ -123,7 +123,11 @@ impl WasmWebTunnelStream {
         let full_url = format!(
             "{}{}",
             url.trim_end_matches('/'),
-            if secret_path.starts_with('/') { secret_path.to_string() } else { format!("/{}", secret_path) }
+            if secret_path.starts_with('/') {
+                secret_path.to_string()
+            } else {
+                format!("/{}", secret_path)
+            }
         );
 
         // Compute HMAC challenge for probe resistance.
@@ -131,11 +135,12 @@ impl WasmWebTunnelStream {
         let protocol = compute_hmac_challenge(secret_path);
         log::debug!("WebTunnel: HMAC challenge protocol={}", &protocol[..6]);
 
-        let ws = WebSocket::new_with_str(&full_url, &protocol)
-            .map_err(|e| io::Error::new(
+        let ws = WebSocket::new_with_str(&full_url, &protocol).map_err(|e| {
+            io::Error::new(
                 io::ErrorKind::ConnectionRefused,
                 format!("WebSocket::new failed: {:?}", e),
-            ))?;
+            )
+        })?;
 
         ws.set_binary_type(BinaryType::Arraybuffer);
 
@@ -245,7 +250,9 @@ impl WasmWebTunnelStream {
                 10,
             );
             check.forget();
-        })).await.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "WebTunnel connect timeout"))?;
+        }))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "WebTunnel connect timeout"))?;
 
         // Check final state
         let s = unsafe { &*state.get() };
@@ -286,10 +293,12 @@ impl WasmWebTunnelStream {
 
         self.ws
             .send_with_array_buffer(&array.buffer())
-            .map_err(|e| io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                format!("WebTunnel send failed: {:?}", e),
-            ))
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("WebTunnel send failed: {:?}", e),
+                )
+            })
     }
 }
 
@@ -312,7 +321,10 @@ impl AsyncRead for WasmWebTunnelStream {
         match state.state {
             TunnelState::Closed | TunnelState::Closing => {
                 if let Some(ref e) = state.error {
-                    Poll::Ready(Err(io::Error::new(io::ErrorKind::ConnectionReset, e.clone())))
+                    Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::ConnectionReset,
+                        e.clone(),
+                    )))
                 } else {
                     Poll::Ready(Ok(0)) // EOF
                 }
@@ -345,12 +357,10 @@ impl AsyncWrite for WasmWebTunnelStream {
                 state.write_waker = Some(_cx.waker().clone());
                 Poll::Pending
             }
-            _ => {
-                Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    state.error.as_deref().unwrap_or("WebTunnel closed"),
-                )))
-            }
+            _ => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                state.error.as_deref().unwrap_or("WebTunnel closed"),
+            ))),
         }
     }
 

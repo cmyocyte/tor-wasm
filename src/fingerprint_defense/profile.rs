@@ -3,7 +3,7 @@
 //! All tor-wasm users report identical values, modeled after
 //! Tor Browser's Firefox ESR 115 on Linux.
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// The normalized browser fingerprint profile.
 /// Every tor-wasm user appears identical.

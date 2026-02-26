@@ -19,27 +19,27 @@
 //! PADDING cells (command 0) are defined in tor-spec.txt Section 3.
 //! They can be sent at any time and are ignored by receivers.
 
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use serde::{Serialize, Deserialize};
 
 /// Configuration for traffic shaping
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficShapingConfig {
     /// Enable random padding cells (default: true for privacy)
     pub padding_enabled: bool,
-    
+
     /// Probability of adding a padding cell (0.0 - 1.0, default: 0.1)
     pub padding_probability: f32,
-    
+
     /// Minimum time between cells in milliseconds (default: 0 - disabled)
     pub min_cell_interval_ms: u64,
-    
+
     /// Enable chaff traffic during idle periods (default: false)
     pub chaff_enabled: bool,
-    
+
     /// Interval for chaff cells in seconds (default: 30)
     pub chaff_interval_secs: u64,
-    
+
     /// Maximum random delay to add (in ms, default: 0)
     pub max_random_delay_ms: u64,
 }
@@ -80,7 +80,7 @@ impl TrafficShapingConfig {
     pub fn with_padding() -> Self {
         Self::default()
     }
-    
+
     /// Create a paranoid configuration with all protections
     pub fn paranoid() -> Self {
         Self {
@@ -98,13 +98,13 @@ impl TrafficShapingConfig {
 pub struct TrafficShaper {
     /// Configuration
     config: TrafficShapingConfig,
-    
+
     /// Timestamp of last cell sent (ms since epoch)
     last_cell_sent_ms: u64,
-    
+
     /// RNG state for padding decisions
     rng_state: u64,
-    
+
     /// Statistics
     stats: TrafficShapingStats,
 }
@@ -114,13 +114,13 @@ pub struct TrafficShaper {
 pub struct TrafficShapingStats {
     /// Number of padding cells sent
     pub padding_cells_sent: u64,
-    
+
     /// Number of chaff cells sent
     pub chaff_cells_sent: u64,
-    
+
     /// Total delay added (ms)
     pub total_delay_added_ms: u64,
-    
+
     /// Number of cells shaped
     pub cells_shaped: u64,
 }
@@ -135,107 +135,113 @@ impl TrafficShaper {
             stats: TrafficShapingStats::default(),
         }
     }
-    
+
     /// Create with default configuration
     pub fn default_config() -> Self {
         Self::new(TrafficShapingConfig::default())
     }
-    
+
     /// Enable or disable padding
     pub fn set_padding(&mut self, enabled: bool) {
         self.config.padding_enabled = enabled;
-        log::info!("🔒 Padding cells: {}", if enabled { "enabled" } else { "disabled" });
+        log::info!(
+            "🔒 Padding cells: {}",
+            if enabled { "enabled" } else { "disabled" }
+        );
     }
-    
+
     /// Enable or disable chaff
     pub fn set_chaff(&mut self, enabled: bool) {
         self.config.chaff_enabled = enabled;
-        log::info!("🔒 Chaff traffic: {}", if enabled { "enabled" } else { "disabled" });
+        log::info!(
+            "🔒 Chaff traffic: {}",
+            if enabled { "enabled" } else { "disabled" }
+        );
     }
-    
+
     /// Set minimum cell interval
     pub fn set_min_interval(&mut self, ms: u64) {
         self.config.min_cell_interval_ms = ms;
         log::info!("🔒 Minimum cell interval: {}ms", ms);
     }
-    
+
     /// Should we add a padding cell before sending?
     pub fn should_add_padding(&mut self) -> bool {
         if !self.config.padding_enabled {
             return false;
         }
-        
+
         // Generate random float 0.0-1.0
         let r = self.random_float();
         r < self.config.padding_probability
     }
-    
+
     /// Calculate delay before sending a cell (for timing obfuscation)
     pub fn calculate_delay(&mut self) -> Duration {
         let mut delay_ms = 0u64;
-        
+
         // Enforce minimum interval
         if self.config.min_cell_interval_ms > 0 {
             let now = current_time_ms();
             let elapsed = now.saturating_sub(self.last_cell_sent_ms);
-            
+
             if elapsed < self.config.min_cell_interval_ms {
                 delay_ms = self.config.min_cell_interval_ms - elapsed;
             }
         }
-        
+
         // Add random delay
         if self.config.max_random_delay_ms > 0 {
             delay_ms += self.random() % (self.config.max_random_delay_ms + 1);
         }
-        
+
         if delay_ms > 0 {
             self.stats.total_delay_added_ms += delay_ms;
         }
-        
+
         Duration::from_millis(delay_ms)
     }
-    
+
     /// Record that a cell was sent
     pub fn record_cell_sent(&mut self) {
         self.last_cell_sent_ms = current_time_ms();
         self.stats.cells_shaped += 1;
     }
-    
+
     /// Record that a padding cell was sent
     pub fn record_padding_sent(&mut self) {
         self.stats.padding_cells_sent += 1;
     }
-    
+
     /// Record that a chaff cell was sent
     pub fn record_chaff_sent(&mut self) {
         self.stats.chaff_cells_sent += 1;
     }
-    
+
     /// Check if chaff should be sent (based on idle time)
     pub fn should_send_chaff(&self) -> bool {
         if !self.config.chaff_enabled {
             return false;
         }
-        
+
         let now = current_time_ms();
         let idle_ms = now.saturating_sub(self.last_cell_sent_ms);
-        
+
         idle_ms > (self.config.chaff_interval_secs * 1000)
     }
-    
+
     /// Create a PADDING cell (Tor command 0)
-    /// 
+    ///
     /// Format: [CircID (4 bytes)] [CMD=0 (1 byte)] [random payload (509 bytes)]
     pub fn create_padding_cell(circuit_id: u32) -> [u8; 514] {
         let mut cell = [0u8; 514];
-        
+
         // Circuit ID (4 bytes, big-endian)
         cell[0..4].copy_from_slice(&circuit_id.to_be_bytes());
-        
+
         // Command = 0 (PADDING)
         cell[4] = 0;
-        
+
         // Fill payload with random data
         getrandom::getrandom(&mut cell[5..]).unwrap_or_else(|_| {
             // Fallback: use timestamp-based pseudo-random
@@ -244,20 +250,20 @@ impl TrafficShaper {
                 *byte = ((ts.wrapping_mul(31).wrapping_add(i as u64)) & 0xFF) as u8;
             }
         });
-        
+
         cell
     }
-    
+
     /// Get statistics
     pub fn stats(&self) -> &TrafficShapingStats {
         &self.stats
     }
-    
+
     /// Get configuration
     pub fn config(&self) -> &TrafficShapingConfig {
         &self.config
     }
-    
+
     // Internal random number generation
     fn random(&mut self) -> u64 {
         // xorshift64
@@ -266,7 +272,7 @@ impl TrafficShaper {
         self.rng_state ^= self.rng_state << 17;
         self.rng_state
     }
-    
+
     fn random_float(&mut self) -> f32 {
         (self.random() % 10000) as f32 / 10000.0
     }
@@ -275,7 +281,7 @@ impl TrafficShaper {
 /// Get current time in milliseconds
 fn current_time_ms() -> u64 {
     use web_time::SystemTime;
-    
+
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -291,9 +297,10 @@ fn current_time_ms() -> u64 {
 ///
 /// These profiles shape Tor cell traffic to statistically resemble
 /// legitimate WebSocket applications, making classification harder.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub enum TrafficProfile {
     /// No shaping — raw Tor cells (514 bytes each)
+    #[default]
     None,
 
     /// Chat application (e.g., WhatsApp Web, Telegram Web)
@@ -313,12 +320,6 @@ pub enum TrafficProfile {
     /// - Steady 30-50ms inter-arrival (30fps video)
     /// - Up/down ratio ~0.8 (roughly symmetric)
     Video,
-}
-
-impl Default for TrafficProfile {
-    fn default() -> Self {
-        TrafficProfile::None
-    }
 }
 
 /// Frame size range for a traffic profile
@@ -366,7 +367,10 @@ impl TrafficProfile {
                 idle_gap_max_ms: 0,
             }),
             TrafficProfile::Video => Some(ProfileParams {
-                frame_sizes: FrameSizeRange { min: 800, max: 1200 },
+                frame_sizes: FrameSizeRange {
+                    min: 800,
+                    max: 1200,
+                },
                 min_delay_ms: 25,
                 max_delay_ms: 50,
                 idle_gap_probability: 0.0,
@@ -385,7 +389,11 @@ impl TrafficProfile {
 ///
 /// Returns a Vec of frame payloads. Each frame may need padding to reach
 /// the minimum size. If data is smaller than `min`, it is padded.
-pub fn fragment_for_profile(data: &[u8], profile: &TrafficProfile, rng_state: &mut u64) -> Vec<Vec<u8>> {
+pub fn fragment_for_profile(
+    data: &[u8],
+    profile: &TrafficProfile,
+    rng_state: &mut u64,
+) -> Vec<Vec<u8>> {
     let params = match profile.params() {
         Some(p) => p,
         None => return vec![data.to_vec()], // No fragmentation
@@ -487,7 +495,7 @@ pub async fn apply_delay(delay: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_default_config() {
         let config = TrafficShapingConfig::default();
@@ -503,7 +511,7 @@ mod tests {
         assert!(!config.chaff_enabled);
         assert_eq!(config.padding_probability, 0.0);
     }
-    
+
     #[test]
     fn test_paranoid_config() {
         let config = TrafficShapingConfig::paranoid();
@@ -511,22 +519,22 @@ mod tests {
         assert!(config.chaff_enabled);
         assert!(config.min_cell_interval_ms > 0);
     }
-    
+
     #[test]
     fn test_padding_cell_format() {
         let cell = TrafficShaper::create_padding_cell(0x12345678);
-        
+
         // Check circuit ID
         let circ_id = u32::from_be_bytes([cell[0], cell[1], cell[2], cell[3]]);
         assert_eq!(circ_id, 0x12345678);
-        
+
         // Check command
         assert_eq!(cell[4], 0); // PADDING
-        
+
         // Check length
         assert_eq!(cell.len(), 514);
     }
-    
+
     #[test]
     fn test_padding_probability() {
         let mut shaper = TrafficShaper::new(TrafficShapingConfig {
@@ -534,11 +542,11 @@ mod tests {
             padding_probability: 1.0, // Always pad
             ..Default::default()
         });
-        
+
         // Should always return true with probability 1.0
         assert!(shaper.should_add_padding());
     }
-    
+
     #[test]
     fn test_chaff_timing() {
         let mut shaper = TrafficShaper::new(TrafficShapingConfig {
@@ -631,4 +639,3 @@ mod tests {
         assert!(d.as_millis() <= 50);
     }
 }
-

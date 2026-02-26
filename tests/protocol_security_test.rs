@@ -24,10 +24,16 @@ fn known_authorities_count() {
 fn authority_fingerprint_format() {
     use tor_wasm::protocol::DIRECTORY_AUTHORITIES;
     for auth in DIRECTORY_AUTHORITIES {
-        assert_eq!(auth.v3ident.len(), 40, "Authority {} has wrong fingerprint length", auth.name);
+        assert_eq!(
+            auth.v3ident.len(),
+            40,
+            "Authority {} has wrong fingerprint length",
+            auth.name
+        );
         assert!(
             auth.v3ident.chars().all(|c| c.is_ascii_hexdigit()),
-            "Authority {} has non-hex fingerprint", auth.name
+            "Authority {} has non-hex fingerprint",
+            auth.name
         );
     }
 }
@@ -145,7 +151,7 @@ fn ed25519_cert_parse_valid() {
 
 #[wasm_bindgen_test]
 fn cert_verifier_quick_check() {
-    use tor_wasm::protocol::{CertsCell, CertificateVerifier};
+    use tor_wasm::protocol::{CertificateVerifier, CertsCell};
 
     let mut cert_data = vec![0u8; 104];
     cert_data[0] = 0x01;

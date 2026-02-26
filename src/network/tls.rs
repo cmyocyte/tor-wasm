@@ -7,7 +7,7 @@
 //!
 //! Since Tor uses its own cryptography (ntor handshake, onion encryption),
 //! and our WebSocket bridge can handle TLS to relays, this module provides:
-//! 
+//!
 //! 1. **TLS metadata tracking** - Server name, connection info
 //! 2. **Certificate information** - For future verification
 //! 3. **Stream wrapping** - Clean API for TLS-wrapped streams
@@ -22,25 +22,24 @@
 //! - Tor's security comes from onion encryption, not just TLS
 
 use crate::transport::WasmTcpStream;
-use crate::error::{Result, TorError};
-use std::io::Result as IoResult;
 use futures::io::{AsyncRead, AsyncWrite};
+use std::io::Result as IoResult;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::net::SocketAddr;
 
 /// Certificate information (for tracking/debugging)
 #[derive(Debug, Clone)]
 pub struct CertificateInfo {
     /// Server name (from SNI)
     pub server_name: String,
-    
+
     /// Peer address
     pub peer_addr: Option<SocketAddr>,
-    
+
     /// Connection timestamp
     pub connected_at: u64,
-    
+
     /// TLS version (placeholder)
     pub tls_version: String,
 }
@@ -64,7 +63,7 @@ impl CertificateInfo {
 pub struct WasmTlsStream {
     /// Underlying TCP stream
     inner: WasmTcpStream,
-    
+
     /// TLS state and metadata
     state: TlsState,
 }
@@ -73,13 +72,13 @@ pub struct WasmTlsStream {
 struct TlsState {
     /// Whether TLS handshake is complete
     handshake_done: bool,
-    
+
     /// Certificate information
     cert_info: Option<CertificateInfo>,
-    
+
     /// Total bytes read through this TLS stream
     bytes_read: u64,
-    
+
     /// Total bytes written through this TLS stream
     bytes_written: u64,
 }
@@ -93,10 +92,10 @@ impl WasmTlsStream {
     ) -> IoResult<Self> {
         let server_name_str = server_name.as_deref().unwrap_or("unknown");
         log::info!("Wrapping stream with TLS (server: {})", server_name_str);
-        
+
         // Create certificate info
         let cert_info = server_name.map(|name| CertificateInfo::new(name, peer_addr));
-        
+
         Ok(Self {
             inner: stream,
             state: TlsState {
@@ -107,32 +106,32 @@ impl WasmTlsStream {
             },
         })
     }
-    
+
     /// Get certificate information
     pub fn certificate_info(&self) -> Option<&CertificateInfo> {
         self.state.cert_info.as_ref()
     }
-    
+
     /// Check if TLS handshake is complete
     pub fn is_handshake_done(&self) -> bool {
         self.state.handshake_done
     }
-    
+
     /// Get total bytes read
     pub fn bytes_read(&self) -> u64 {
         self.state.bytes_read
     }
-    
+
     /// Get total bytes written
     pub fn bytes_written(&self) -> u64 {
         self.state.bytes_written
     }
-    
+
     /// Get the underlying stream (for testing/debugging)
     pub fn into_inner(self) -> WasmTcpStream {
         self.inner
     }
-    
+
     /// Get connection age in seconds
     pub fn connection_age(&self) -> Option<u64> {
         self.state.cert_info.as_ref().map(|cert| {
@@ -150,12 +149,12 @@ impl AsyncRead for WasmTlsStream {
         buf: &mut [u8],
     ) -> Poll<IoResult<usize>> {
         let result = Pin::new(&mut self.inner).poll_read(cx, buf);
-        
+
         // Track bytes read
         if let Poll::Ready(Ok(n)) = result {
             self.state.bytes_read += n as u64;
         }
-        
+
         result
     }
 }
@@ -168,19 +167,19 @@ impl AsyncWrite for WasmTlsStream {
         buf: &[u8],
     ) -> Poll<IoResult<usize>> {
         let result = Pin::new(&mut self.inner).poll_write(cx, buf);
-        
+
         // Track bytes written
         if let Poll::Ready(Ok(n)) = result {
             self.state.bytes_written += n as u64;
         }
-        
+
         result
     }
-    
+
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IoResult<()>> {
         Pin::new(&mut self.inner).poll_flush(cx)
     }
-    
+
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IoResult<()>> {
         Pin::new(&mut self.inner).poll_close(cx)
     }
@@ -200,7 +199,7 @@ impl WasmTlsConnector {
             _verify_certs: true,
         }
     }
-    
+
     /// Connect with TLS, tracking connection metadata
     pub async fn connect(
         &self,
@@ -210,7 +209,7 @@ impl WasmTlsConnector {
     ) -> IoResult<WasmTlsStream> {
         WasmTlsStream::wrap(stream, server_name.map(String::from), peer_addr).await
     }
-    
+
     /// Connect with TLS (simplified version)
     pub async fn connect_simple(
         &self,
@@ -230,13 +229,13 @@ impl Default for WasmTlsConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_tls_connector_creation() {
         let connector = WasmTlsConnector::new();
         assert!(connector._verify_certs);
     }
-    
+
     #[test]
     fn test_certificate_info() {
         let addr: SocketAddr = "1.2.3.4:443".parse().unwrap();
@@ -246,4 +245,3 @@ mod tests {
         assert!(cert.connected_at > 0);
     }
 }
-

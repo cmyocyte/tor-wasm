@@ -14,19 +14,19 @@
 //!   HTTPS to a CDN IP — indistinguishable from normal website traffic.
 //!   Fallback when WebSocket and ECH are both blocked.
 
-pub mod websocket;
 pub mod bridge_blind;
-pub mod webrtc;
 pub mod meek;
-pub mod webtunnel;
 pub mod unified;
+pub mod webrtc;
+pub mod websocket;
+pub mod webtunnel;
 
-pub use websocket::WasmTcpStream;
 pub use bridge_blind::blind_target_address;
-pub use webrtc::WasmRtcStream;
 pub use meek::WasmMeekStream;
-pub use webtunnel::WasmWebTunnelStream;
 pub use unified::TransportStream;
+pub use webrtc::WasmRtcStream;
+pub use websocket::WasmTcpStream;
+pub use webtunnel::WasmWebTunnelStream;
 
 /// Transport mode for connecting to the bridge
 #[derive(Debug, Clone, PartialEq)]

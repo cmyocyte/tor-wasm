@@ -4,9 +4,9 @@
 //! When fingerprinting scripts call `.toString()` on them, browsers return
 //! `"function() { [native code] }"` automatically — no spoofing needed.
 
+use js_sys::{Array, Function, Object, Reflect};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use js_sys::{Object, Reflect, Function, Array};
 
 /// Get the global window object.
 pub fn window() -> Result<JsValue, JsValue> {
@@ -37,8 +37,16 @@ pub fn patch_getter(
 ) -> Result<(), JsValue> {
     let descriptor = Object::new();
     Reflect::set(&descriptor, &JsValue::from_str("get"), getter.as_ref())?;
-    Reflect::set(&descriptor, &JsValue::from_str("configurable"), &JsValue::TRUE)?;
-    Reflect::set(&descriptor, &JsValue::from_str("enumerable"), &JsValue::TRUE)?;
+    Reflect::set(
+        &descriptor,
+        &JsValue::from_str("configurable"),
+        &JsValue::TRUE,
+    )?;
+    Reflect::set(
+        &descriptor,
+        &JsValue::from_str("enumerable"),
+        &JsValue::TRUE,
+    )?;
 
     // Use js_sys eval to call Object.defineProperty since Reflect::define_property
     // has different semantics (returns bool, doesn't throw)
@@ -91,13 +99,23 @@ pub fn proxy_constructor_with_construct(
     construct_trap: Closure<dyn FnMut(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>,
 ) -> Result<JsValue, JsValue> {
     let handler = Object::new();
-    Reflect::set(&handler, &JsValue::from_str("construct"), construct_trap.as_ref())?;
+    Reflect::set(
+        &handler,
+        &JsValue::from_str("construct"),
+        construct_trap.as_ref(),
+    )?;
     construct_trap.forget();
 
     // Also add an apply trap for when called without `new`
-    let apply_trap = Closure::wrap(Box::new(|_target: JsValue, _this: JsValue, _args: JsValue| -> Result<JsValue, JsValue> {
-        Err(throw_dom_exception("Blocked by tor-wasm fingerprint defense", "NotAllowedError")?)
-    }) as Box<dyn FnMut(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>);
+    let apply_trap = Closure::wrap(Box::new(
+        |_target: JsValue, _this: JsValue, _args: JsValue| -> Result<JsValue, JsValue> {
+            Err(throw_dom_exception(
+                "Blocked by tor-wasm fingerprint defense",
+                "NotAllowedError",
+            )?)
+        },
+    )
+        as Box<dyn FnMut(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>);
     Reflect::set(&handler, &JsValue::from_str("apply"), apply_trap.as_ref())?;
     apply_trap.forget();
 
@@ -151,7 +169,9 @@ pub fn frozen_string_array(items: &[&str]) -> JsValue {
     let freeze: Function = Reflect::get(
         &Reflect::get(&js_sys::global(), &JsValue::from_str("Object")).unwrap(),
         &JsValue::from_str("freeze"),
-    ).unwrap().unchecked_into();
+    )
+    .unwrap()
+    .unchecked_into();
     Reflect::apply(&freeze, &JsValue::UNDEFINED, &Array::of1(&arr)).unwrap()
 }
 
@@ -160,16 +180,19 @@ pub fn frozen_string_array(items: &[&str]) -> JsValue {
 pub fn empty_plugin_array() -> JsValue {
     let arr = Array::new();
 
-    let item_fn = Closure::wrap(Box::new(|| -> JsValue {
-        JsValue::NULL
-    }) as Box<dyn FnMut() -> JsValue>);
+    let item_fn =
+        Closure::wrap(Box::new(|| -> JsValue { JsValue::NULL }) as Box<dyn FnMut() -> JsValue>);
     Reflect::set(&arr, &JsValue::from_str("item"), item_fn.as_ref()).unwrap();
     item_fn.forget();
 
-    let named_item_fn = Closure::wrap(Box::new(|| -> JsValue {
-        JsValue::NULL
-    }) as Box<dyn FnMut() -> JsValue>);
-    Reflect::set(&arr, &JsValue::from_str("namedItem"), named_item_fn.as_ref()).unwrap();
+    let named_item_fn =
+        Closure::wrap(Box::new(|| -> JsValue { JsValue::NULL }) as Box<dyn FnMut() -> JsValue>);
+    Reflect::set(
+        &arr,
+        &JsValue::from_str("namedItem"),
+        named_item_fn.as_ref(),
+    )
+    .unwrap();
     named_item_fn.forget();
 
     let refresh_fn = Closure::wrap(Box::new(|| {}) as Box<dyn FnMut()>);

@@ -5,10 +5,10 @@
 
 use super::stream::CooperativeStream;
 use crate::error::{Result, TorError};
-use rustls::{ClientConfig, ClientConnection, RootCertStore};
 use rustls::pki_types::ServerName;
-use std::sync::Arc;
+use rustls::{ClientConfig, ClientConnection, RootCertStore};
 use std::io::{Read, Write};
+use std::sync::Arc;
 
 /// Buffer size for TLS records
 const TLS_BUFFER_SIZE: usize = 16384;
@@ -37,7 +37,11 @@ pub struct CooperativeTlsStream {
 impl CooperativeTlsStream {
     /// Create a new TLS stream and perform handshake
     pub async fn new(stream: CooperativeStream, server_name: &str) -> Result<Self> {
-        log::info!("🔐 TLS handshake with {} (timeout: {}ms)", server_name, TLS_HANDSHAKE_TIMEOUT_MS);
+        log::info!(
+            "🔐 TLS handshake with {} (timeout: {}ms)",
+            server_name,
+            TLS_HANDSHAKE_TIMEOUT_MS
+        );
 
         // Set aggressive timeouts during handshake
         let stream = stream
@@ -106,7 +110,8 @@ impl CooperativeTlsStream {
     /// Flush pending TLS data to the network
     async fn flush_tls_to_network(&mut self) -> Result<()> {
         let mut tls_output = Vec::new();
-        self.tls.write_tls(&mut tls_output)
+        self.tls
+            .write_tls(&mut tls_output)
             .map_err(|e| TorError::CryptoError(format!("TLS write error: {}", e)))?;
 
         if !tls_output.is_empty() {
@@ -123,7 +128,9 @@ impl CooperativeTlsStream {
         let n = self.stream.read(&mut buf).await?;
 
         if n == 0 {
-            return Err(TorError::HandshakeFailed("Connection closed during TLS handshake".into()));
+            return Err(TorError::HandshakeFailed(
+                "Connection closed during TLS handshake".into(),
+            ));
         }
 
         log::debug!("    📥 Received {} bytes of TLS data from network", n);
@@ -139,23 +146,32 @@ impl CooperativeTlsStream {
         }
 
         // Feed to rustls
-        let processed = self.tls.read_tls(&mut &self.incoming_tls[..])
+        let processed = self
+            .tls
+            .read_tls(&mut &self.incoming_tls[..])
             .map_err(|e| TorError::CryptoError(format!("TLS read error: {}", e)))?;
 
         // Remove processed bytes
         self.incoming_tls.drain(..processed);
 
         // Process the TLS records
-        let state = self.tls.process_new_packets()
+        let state = self
+            .tls
+            .process_new_packets()
             .map_err(|e| TorError::CryptoError(format!("TLS process error: {}", e)))?;
 
-        log::debug!("    🔄 Processed {} bytes, {} remaining in buffer",
-            processed, self.incoming_tls.len());
+        log::debug!(
+            "    🔄 Processed {} bytes, {} remaining in buffer",
+            processed,
+            self.incoming_tls.len()
+        );
 
         // If there's plaintext available, buffer it
         if state.plaintext_bytes_to_read() > 0 {
             let mut plaintext = vec![0u8; state.plaintext_bytes_to_read()];
-            self.tls.reader().read_exact(&mut plaintext)
+            self.tls
+                .reader()
+                .read_exact(&mut plaintext)
                 .map_err(|e| TorError::CryptoError(format!("TLS plaintext read error: {}", e)))?;
             self.plaintext_buf.extend_from_slice(&plaintext);
         }
@@ -167,7 +183,10 @@ impl CooperativeTlsStream {
     pub async fn write(&mut self, data: &[u8]) -> Result<usize> {
         log::debug!("  📤 TLS write: {} bytes", data.len());
 
-        let written = self.tls.writer().write(data)
+        let written = self
+            .tls
+            .writer()
+            .write(data)
             .map_err(|e| TorError::Stream(format!("TLS write error: {}", e)))?;
 
         self.flush_tls_to_network().await?;

@@ -14,56 +14,52 @@ pub enum NetworkError {
         reason: String,
         retry_count: u32,
     },
-    
+
     /// Connection timeout
-    Timeout {
-        target: String,
-        timeout_ms: u32,
-    },
-    
+    Timeout { target: String, timeout_ms: u32 },
+
     /// Bridge server unavailable
-    BridgeUnavailable {
-        bridge_url: String,
-        reason: String,
-    },
-    
+    BridgeUnavailable { bridge_url: String, reason: String },
+
     /// TLS error
-    TlsError {
-        target: String,
-        reason: String,
-    },
-    
+    TlsError { target: String, reason: String },
+
     /// Protocol error (invalid data received)
-    ProtocolError {
-        details: String,
-    },
-    
+    ProtocolError { details: String },
+
     /// Connection closed unexpectedly
     ConnectionClosed {
         bytes_sent: u64,
         bytes_received: u64,
     },
-    
+
     /// Pool exhausted
-    PoolExhausted {
-        max_connections: usize,
-    },
-    
+    PoolExhausted { max_connections: usize },
+
     /// Invalid address
-    InvalidAddress {
-        address: String,
-    },
+    InvalidAddress { address: String },
 }
 
 impl fmt::Display for NetworkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            NetworkError::ConnectionFailed { target, reason, retry_count } => {
-                write!(f, "Failed to connect to {} after {} retries: {}", 
-                    target, retry_count, reason)
+            NetworkError::ConnectionFailed {
+                target,
+                reason,
+                retry_count,
+            } => {
+                write!(
+                    f,
+                    "Failed to connect to {} after {} retries: {}",
+                    target, retry_count, reason
+                )
             }
             NetworkError::Timeout { target, timeout_ms } => {
-                write!(f, "Connection to {} timed out after {}ms", target, timeout_ms)
+                write!(
+                    f,
+                    "Connection to {} timed out after {}ms",
+                    target, timeout_ms
+                )
             }
             NetworkError::BridgeUnavailable { bridge_url, reason } => {
                 write!(f, "Bridge server at {} unavailable: {}", bridge_url, reason)
@@ -74,9 +70,15 @@ impl fmt::Display for NetworkError {
             NetworkError::ProtocolError { details } => {
                 write!(f, "Protocol error: {}", details)
             }
-            NetworkError::ConnectionClosed { bytes_sent, bytes_received } => {
-                write!(f, "Connection closed unexpectedly (sent: {}, received: {})", 
-                    bytes_sent, bytes_received)
+            NetworkError::ConnectionClosed {
+                bytes_sent,
+                bytes_received,
+            } => {
+                write!(
+                    f,
+                    "Connection closed unexpectedly (sent: {}, received: {})",
+                    bytes_sent, bytes_received
+                )
             }
             NetworkError::PoolExhausted { max_connections } => {
                 write!(f, "Connection pool exhausted (max: {})", max_connections)
@@ -102,7 +104,7 @@ impl From<NetworkError> for io::Error {
             NetworkError::PoolExhausted { .. } => io::ErrorKind::WouldBlock,
             NetworkError::InvalidAddress { .. } => io::ErrorKind::InvalidInput,
         };
-        
+
         io::Error::new(kind, err.to_string())
     }
 }
@@ -112,16 +114,16 @@ impl From<NetworkError> for io::Error {
 pub enum RecoveryStrategy {
     /// Retry the operation
     Retry,
-    
+
     /// Retry with exponential backoff
     RetryWithBackoff,
-    
+
     /// Try a different target (e.g., different directory authority)
     TryAlternative,
-    
+
     /// Fail immediately
     Fail,
-    
+
     /// Attempt reconnection
     Reconnect,
 }
@@ -146,7 +148,7 @@ impl NetworkError {
             NetworkError::InvalidAddress { .. } => RecoveryStrategy::Fail,
         }
     }
-    
+
     /// Check if this error is recoverable
     pub fn is_recoverable(&self) -> bool {
         !matches!(self.recovery_strategy(), RecoveryStrategy::Fail)
@@ -156,7 +158,7 @@ impl NetworkError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_error_display() {
         let err = NetworkError::ConnectionFailed {
@@ -164,31 +166,30 @@ mod tests {
             reason: "refused".to_string(),
             retry_count: 2,
         };
-        
+
         let msg = err.to_string();
         assert!(msg.contains("127.0.0.1:9001"));
         assert!(msg.contains("2 retries"));
     }
-    
+
     #[test]
     fn test_recovery_strategy() {
         let err = NetworkError::Timeout {
             target: "test".to_string(),
             timeout_ms: 5000,
         };
-        
+
         assert_eq!(err.recovery_strategy(), RecoveryStrategy::Retry);
         assert!(err.is_recoverable());
     }
-    
+
     #[test]
     fn test_non_recoverable() {
         let err = NetworkError::InvalidAddress {
             address: "invalid".to_string(),
         };
-        
+
         assert_eq!(err.recovery_strategy(), RecoveryStrategy::Fail);
         assert!(!err.is_recoverable());
     }
 }
-

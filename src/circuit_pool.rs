@@ -1,7 +1,7 @@
 //! Circuit Prebuilding Pool
 //!
 //! Maintains a pool of ready-to-use circuits for improved latency.
-//! 
+//!
 //! Security considerations:
 //! - Limited pool size (prevents fingerprinting)
 //! - Circuit expiration (stale circuits are suspicious)
@@ -9,8 +9,8 @@
 
 use std::collections::VecDeque;
 
+use crate::error::Result;
 use crate::protocol::{Circuit, CircuitBuilder, RelaySelector};
-use crate::error::{TorError, Result};
 
 /// Timestamp in milliseconds (WASM-compatible)
 fn now_ms() -> u64 {
@@ -44,9 +44,9 @@ pub struct CircuitPoolConfig {
 impl Default for CircuitPoolConfig {
     fn default() -> Self {
         Self {
-            max_prebuilt: 3,           // Security: limit to prevent fingerprinting
-            max_age_ms: 10 * 60 * 1000, // 10 minutes
-            min_circuits: 1,           // Keep at least 1 ready
+            max_prebuilt: 3,                 // Security: limit to prevent fingerprinting
+            max_age_ms: 10 * 60 * 1000,      // 10 minutes
+            min_circuits: 1,                 // Keep at least 1 ready
             maintenance_interval_ms: 30_000, // Check every 30s
         }
     }
@@ -134,8 +134,11 @@ impl PrebuiltCircuitPool {
         // Try to get from pool (check health before handing out)
         while let Some(prebuilt) = self.available.pop_front() {
             if prebuilt.circuit.is_connected() {
-                log::info!("Using prebuilt circuit (age: {}ms, pool remaining: {})",
-                    prebuilt.age_ms(), self.available.len());
+                log::info!(
+                    "Using prebuilt circuit (age: {}ms, pool remaining: {})",
+                    prebuilt.age_ms(),
+                    self.available.len()
+                );
                 self.stats.pool_hits += 1;
                 self.stats.current_pool_size = self.available.len();
                 return Ok(prebuilt.circuit);
@@ -178,7 +181,7 @@ impl PrebuiltCircuitPool {
     }
 
     /// Prebuild circuits up to the minimum
-    /// 
+    ///
     /// Call this after bootstrap to have circuits ready.
     pub async fn warm_up(
         &mut self,
@@ -186,11 +189,14 @@ impl PrebuiltCircuitPool {
         selector: &RelaySelector,
     ) -> Result<usize> {
         let mut built = 0;
-        
+
         while self.available.len() < self.config.min_circuits {
-            log::info!("🔥 Warming up circuit pool ({}/{})", 
-                self.available.len(), self.config.min_circuits);
-            
+            log::info!(
+                "🔥 Warming up circuit pool ({}/{})",
+                self.available.len(),
+                self.config.min_circuits
+            );
+
             match builder.build_circuit(selector).await {
                 Ok(circuit) => {
                     self.available.push_back(PrebuiltCircuit::new(circuit));
@@ -203,15 +209,18 @@ impl PrebuiltCircuitPool {
                 }
             }
         }
-        
+
         self.stats.current_pool_size = self.available.len();
-        log::info!("✅ Circuit pool warmed up ({} circuits ready)", self.available.len());
-        
+        log::info!(
+            "✅ Circuit pool warmed up ({} circuits ready)",
+            self.available.len()
+        );
+
         Ok(built)
     }
 
     /// Background maintenance task
-    /// 
+    ///
     /// In WASM, call this periodically from JS.
     pub fn maintain(&mut self) {
         self.expire_old_circuits();
@@ -230,15 +239,16 @@ impl PrebuiltCircuitPool {
     /// Remove expired circuits from pool
     fn expire_old_circuits(&mut self) {
         let before = self.available.len();
-        
-        self.available.retain(|c| !c.is_expired(self.config.max_age_ms));
-        
+
+        self.available
+            .retain(|c| !c.is_expired(self.config.max_age_ms));
+
         let expired = before - self.available.len();
         if expired > 0 {
             log::info!("🗑️ Expired {} old circuits from pool", expired);
             self.stats.circuits_expired += expired as u64;
         }
-        
+
         self.stats.current_pool_size = self.available.len();
     }
 
@@ -294,4 +304,3 @@ mod tests {
         assert_eq!(stats.pool_misses, 0);
     }
 }
-

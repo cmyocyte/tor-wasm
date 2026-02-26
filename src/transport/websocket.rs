@@ -4,11 +4,11 @@
 //! allowing WASM code to communicate with Tor relays through a bridge server.
 
 use futures::io::{AsyncRead, AsyncWrite};
+use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::io::{self, Result as IoResult};
 use std::pin::Pin;
 use std::rc::Rc;
-use std::cell::UnsafeCell;
 use std::task::{Context, Poll, Waker};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -87,7 +87,7 @@ impl StreamState {
 pub struct WasmTcpStream {
     /// The underlying WebSocket
     ws: WebSocket,
-    
+
     /// Shared state between callbacks and stream methods (UnsafeCell is safe in single-threaded WASM)
     state: Rc<UnsafeCell<StreamState>>,
 }
@@ -130,22 +130,25 @@ impl WasmTcpStream {
     /// Connect to a Tor relay through the WebSocket bridge
     pub async fn connect(url: &str) -> IoResult<Self> {
         log::info!("Connecting to WebSocket bridge: {}", url);
-        
+
         // Create WebSocket
         let ws = WebSocket::new(url).map_err(|e| {
             log::error!("Failed to create WebSocket: {:?}", e);
-            io::Error::new(io::ErrorKind::ConnectionRefused, "Failed to create WebSocket")
+            io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                "Failed to create WebSocket",
+            )
         })?;
-        
+
         // Set binary mode
         ws.set_binary_type(BinaryType::Arraybuffer);
-        
+
         // Create shared state (UnsafeCell is safe in single-threaded WASM)
         let state = Rc::new(UnsafeCell::new(StreamState::new()));
-        
+
         // Set up event handlers
         Self::setup_handlers(&ws, state.clone())?;
-        
+
         // Wait for connection to open
         let connection_future = {
             let state_clone = state.clone();
@@ -155,11 +158,11 @@ impl WasmTcpStream {
                     let current_state = unsafe {
                         let st = &*state_clone.get();
                         if let Some(err) = &st.error {
-                            return Err(io::Error::new(io::ErrorKind::Other, err.clone()));
+                            return Err(io::Error::other(err.clone()));
                         }
                         st.state
                     };
-                    
+
                     match current_state {
                         ConnectionState::Connected => return Ok(()),
                         ConnectionState::Closed | ConnectionState::Closing => {
@@ -178,14 +181,14 @@ impl WasmTcpStream {
                 }
             }
         };
-        
+
         connection_future.await?;
-        
+
         log::info!("WebSocket connected successfully");
-        
+
         Ok(Self { ws, state })
     }
-    
+
     /// Set up WebSocket event handlers
     fn setup_handlers(ws: &WebSocket, state: Rc<UnsafeCell<StreamState>>) -> IoResult<()> {
         // onopen handler
@@ -201,11 +204,11 @@ impl WasmTcpStream {
                     }
                 }
             }) as Box<dyn FnMut(JsValue)>);
-            
+
             ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
             onopen.forget(); // Keep closure alive
         }
-        
+
         // onmessage handler - receives data
         {
             let state_clone = state.clone();
@@ -213,13 +216,13 @@ impl WasmTcpStream {
                 if let Ok(array_buffer) = event.data().dyn_into::<js_sys::ArrayBuffer>() {
                     let array = js_sys::Uint8Array::new(&array_buffer);
                     let data = array.to_vec();
-                    
+
                     log::debug!("WebSocket received {} bytes", data.len());
-                    
+
                     unsafe {
                         let st = &mut *state_clone.get();
                         st.recv_buffer.extend(data);
-                        
+
                         // Wake up any pending read
                         if let Some(waker) = st.read_waker.take() {
                             waker.wake();
@@ -227,11 +230,11 @@ impl WasmTcpStream {
                     }
                 }
             }) as Box<dyn FnMut(MessageEvent)>);
-            
+
             ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
             onmessage.forget();
         }
-        
+
         // onerror handler
         {
             let state_clone = state.clone();
@@ -241,7 +244,7 @@ impl WasmTcpStream {
                     let st = &mut *state_clone.get();
                     st.error = Some(format!("WebSocket error: {}", event.message()));
                     st.state = ConnectionState::Closed;
-                    
+
                     // Wake up any pending operations
                     if let Some(waker) = st.read_waker.take() {
                         waker.wake();
@@ -251,11 +254,11 @@ impl WasmTcpStream {
                     }
                 }
             }) as Box<dyn FnMut(ErrorEvent)>);
-            
+
             ws.set_onerror(Some(onerror.as_ref().unchecked_ref()));
             onerror.forget();
         }
-        
+
         // onclose handler
         {
             let state_clone = state.clone();
@@ -264,7 +267,7 @@ impl WasmTcpStream {
                 unsafe {
                     let st = &mut *state_clone.get();
                     st.state = ConnectionState::Closed;
-                    
+
                     // Wake up any pending operations
                     if let Some(waker) = st.read_waker.take() {
                         waker.wake();
@@ -274,14 +277,14 @@ impl WasmTcpStream {
                     }
                 }
             }) as Box<dyn FnMut(JsValue)>);
-            
+
             ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
             onclose.forget();
         }
-        
+
         Ok(())
     }
-    
+
     /// Set the traffic shaping profile for DPI resistance.
     ///
     /// When a non-None profile is active, outgoing data is fragmented into
@@ -317,7 +320,7 @@ impl WasmTcpStream {
 
             // Check if we can send
             match state.state {
-                ConnectionState::Connected => {},
+                ConnectionState::Connected => {}
                 ConnectionState::Connecting => {
                     return Err(io::Error::new(
                         io::ErrorKind::NotConnected,
@@ -360,10 +363,12 @@ impl WasmTcpStream {
             );
 
             let array = js_sys::Uint8Array::from(&first[..]);
-            self.ws.send_with_array_buffer(&array.buffer()).map_err(|e| {
-                log::error!("Failed to send data: {:?}", e);
-                io::Error::new(io::ErrorKind::Other, "Failed to send data over WebSocket")
-            })?;
+            self.ws
+                .send_with_array_buffer(&array.buffer())
+                .map_err(|e| {
+                    log::error!("Failed to send data: {:?}", e);
+                    io::Error::other("Failed to send data over WebSocket")
+                })?;
 
             // If there are more frames, schedule them with timing delays
             if frames.len() > 1 {
@@ -380,7 +385,7 @@ impl WasmTcpStream {
     /// Uses `setTimeout` to send each frame after the appropriate delay,
     /// simulating the inter-frame timing of the active traffic profile.
     fn schedule_deferred_frames(&self, frames: Vec<Vec<u8>>, rng: &mut u64) {
-        use crate::traffic_shaping::{profile_delay, TrafficProfile};
+        use crate::traffic_shaping::profile_delay;
 
         let ws = self.ws.clone();
         let state = self.state.clone();
@@ -434,20 +439,17 @@ impl AsyncRead for WasmTcpStream {
     ) -> Poll<IoResult<usize>> {
         unsafe {
             let state = &mut *self.state.get();
-            
+
             // Check for errors
             if let Some(err) = &state.error {
-                return Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    err.clone(),
-                )));
+                return Poll::Ready(Err(io::Error::other(err.clone())));
             }
-            
+
             // Check if connection is closed
             if state.state == ConnectionState::Closed && state.recv_buffer.is_empty() {
                 return Poll::Ready(Ok(0)); // EOF
             }
-            
+
             // If we have data in the buffer, read it
             if !state.recv_buffer.is_empty() {
                 let to_read = buf.len().min(state.recv_buffer.len());
@@ -456,7 +458,7 @@ impl AsyncRead for WasmTcpStream {
                 }
                 return Poll::Ready(Ok(to_read));
             }
-            
+
             // No data available, store waker and return pending
             state.read_waker = Some(cx.waker().clone());
             Poll::Pending
@@ -465,25 +467,18 @@ impl AsyncRead for WasmTcpStream {
 }
 
 impl AsyncWrite for WasmTcpStream {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<IoResult<usize>> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<IoResult<usize>> {
         unsafe {
             let state = &mut *self.state.get();
-            
+
             // Check for errors
             if let Some(err) = &state.error {
-                return Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    err.clone(),
-                )));
+                return Poll::Ready(Err(io::Error::other(err.clone())));
             }
-            
+
             // Check if connection is ready
             match state.state {
-                ConnectionState::Connected => {},
+                ConnectionState::Connected => {}
                 ConnectionState::Connecting => {
                     // Store waker and return pending
                     state.write_waker = Some(cx.waker().clone());
@@ -496,14 +491,14 @@ impl AsyncWrite for WasmTcpStream {
                     )));
                 }
             }
-            
+
             // Buffer the data
             state.send_buffer.extend(buf);
-            
+
             Poll::Ready(Ok(buf.len()))
         }
     }
-    
+
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<IoResult<()>> {
         // Try to flush the send buffer
         match self.flush_send_buffer() {
@@ -519,13 +514,13 @@ impl AsyncWrite for WasmTcpStream {
             Err(e) => Poll::Ready(Err(e)),
         }
     }
-    
+
     fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<IoResult<()>> {
         // Flush any remaining data first
         if let Err(e) = self.flush_send_buffer() {
             return Poll::Ready(Err(e));
         }
-        
+
         // Close the WebSocket
         unsafe {
             let state = &mut *self.state.get();
@@ -534,7 +529,7 @@ impl AsyncWrite for WasmTcpStream {
                 let _ = self.ws.close();
             }
         }
-        
+
         Poll::Ready(Ok(()))
     }
 }
@@ -557,7 +552,7 @@ impl std::fmt::Debug for WasmTcpStream {
 mod tests {
     use super::*;
     use wasm_bindgen_test::*;
-    
+
     #[wasm_bindgen_test]
     async fn test_stream_creation() {
         // This test requires a bridge server running
@@ -565,4 +560,3 @@ mod tests {
         assert!(true);
     }
 }
-

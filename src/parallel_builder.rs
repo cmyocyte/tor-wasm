@@ -7,13 +7,8 @@
 //! - Use the first successful connection (race)
 //! - Still enforce relay selection constraints
 
-use std::rc::Rc;
-use std::cell::RefCell;
-use wasm_bindgen_futures::spawn_local;
-use futures::channel::oneshot;
-
-use crate::protocol::{Circuit, CircuitBuilder, RelaySelector, Relay};
-use crate::error::{TorError, Result};
+use crate::error::{Result, TorError};
+use crate::protocol::{Circuit, CircuitBuilder, Relay, RelaySelector};
 
 /// Configuration for parallel building
 #[derive(Debug, Clone)]
@@ -74,7 +69,7 @@ impl ParallelCircuitBuilder {
     }
 
     /// Build a circuit using parallel relay selection
-    /// 
+    ///
     /// This tries multiple guards in parallel and uses the first to succeed.
     pub async fn build_fast(
         &mut self,
@@ -84,50 +79,64 @@ impl ParallelCircuitBuilder {
         self.stats.builds_attempted += 1;
         let start_time = now_ms();
 
-        log::info!("⚡ Starting parallel circuit build ({} candidates)", 
-            self.config.parallel_guards);
+        log::info!(
+            "⚡ Starting parallel circuit build ({} candidates)",
+            self.config.parallel_guards
+        );
 
         // 1. Get multiple candidates for each position
         let guards = selector.select_guards(self.config.parallel_guards);
-        
+
         // Collect guard fingerprints for exclusion
-        let guard_fps: Vec<&str> = guards.iter()
-            .map(|g| g.fingerprint.as_str())
-            .collect();
-            
+        let guard_fps: Vec<&str> = guards.iter().map(|g| g.fingerprint.as_str()).collect();
+
         let middles = selector.select_middles(self.config.parallel_guards, &guard_fps);
-        
+
         // Collect middle fingerprints for exclusion
-        let middle_fps: Vec<&str> = middles.iter()
-            .map(|m| m.fingerprint.as_str())
-            .collect();
+        let middle_fps: Vec<&str> = middles.iter().map(|m| m.fingerprint.as_str()).collect();
         let mut exclude_for_exits = guard_fps.clone();
         exclude_for_exits.extend(middle_fps.iter().cloned());
-        
+
         let exits = selector.select_exits(self.config.parallel_guards, &exclude_for_exits);
 
-        log::debug!("Selected {} guards, {} middles, {} exits",
-            guards.len(), middles.len(), exits.len());
+        log::debug!(
+            "Selected {} guards, {} middles, {} exits",
+            guards.len(),
+            middles.len(),
+            exits.len()
+        );
 
         // 2. Try guards sequentially for now (true parallel would need more complex async)
         // In a full implementation, we'd use tokio::select! or futures::select!
         // For WASM, we're somewhat limited in true parallelism
-        
+
         let mut last_error = None;
-        
+
         for (i, guard) in guards.iter().enumerate() {
             self.stats.total_parallel_attempts += 1;
-            
-            log::info!("  🔄 Trying guard {}/{}: {}", i + 1, guards.len(), guard.nickname);
-            
+
+            log::info!(
+                "  🔄 Trying guard {}/{}: {}",
+                i + 1,
+                guards.len(),
+                guard.nickname
+            );
+
             // Try to build circuit with this guard
-            match self.try_build_with_guard(builder, guard, &middles, &exits).await {
+            match self
+                .try_build_with_guard(builder, guard, &middles, &exits)
+                .await
+            {
                 Ok(circuit) => {
                     let elapsed = now_ms() - start_time;
                     self.stats.builds_succeeded += 1;
                     self.update_avg_time(elapsed);
-                    
-                    log::info!("  ✅ Circuit built in {}ms using {}", elapsed, guard.nickname);
+
+                    log::info!(
+                        "  ✅ Circuit built in {}ms using {}",
+                        elapsed,
+                        guard.nickname
+                    );
                     return Ok(circuit);
                 }
                 Err(e) => {
@@ -139,9 +148,8 @@ impl ParallelCircuitBuilder {
         }
 
         self.stats.builds_failed += 1;
-        Err(last_error.unwrap_or_else(|| 
-            TorError::CircuitBuildFailed("All parallel attempts failed".into())
-        ))
+        Err(last_error
+            .unwrap_or_else(|| TorError::CircuitBuildFailed("All parallel attempts failed".into())))
     }
 
     /// Try building with a specific guard
@@ -157,12 +165,14 @@ impl ParallelCircuitBuilder {
         // 2. Complete handshake
         // 3. Extend to middle (try multiple if first fails)
         // 4. Extend to exit (try multiple if first fails)
-        
+
         // For now, delegate to the existing builder with hints
         // Convert references to owned for the builder call
         let middle_slice: Vec<Relay> = middles.iter().map(|r| (*r).clone()).collect();
         let exit_slice: Vec<Relay> = exits.iter().map(|r| (*r).clone()).collect();
-        builder.build_circuit_with_hints(guard, &middle_slice, &exit_slice).await
+        builder
+            .build_circuit_with_hints(guard, &middle_slice, &exit_slice)
+            .await
     }
 
     /// Update average success time
@@ -173,8 +183,7 @@ impl ParallelCircuitBuilder {
         } else {
             // Rolling average
             let old_avg = self.stats.avg_first_success_ms;
-            self.stats.avg_first_success_ms = 
-                old_avg + (new_time as f64 - old_avg) / total_success;
+            self.stats.avg_first_success_ms = old_avg + (new_time as f64 - old_avg) / total_success;
         }
     }
 
@@ -235,4 +244,3 @@ mod tests {
         assert_eq!(stats.builds_succeeded, 0);
     }
 }
-

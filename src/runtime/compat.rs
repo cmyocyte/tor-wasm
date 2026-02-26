@@ -2,16 +2,14 @@
 //!
 //! This module implements all the traits required by Arti's Runtime trait.
 
+use futures::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use futures::Future;
-use futures::io::{AsyncRead, AsyncWrite};
 
 use super::WasmRuntime;
-use crate::transport::{WasmTcpStream, BridgeConfig, TransportStream};
-use crate::{Result, TorError};
+use crate::transport::{BridgeConfig, TransportStream, WasmTcpStream};
 
 // Re-export for convenience
 pub use super::sleep::WasmSleep;
@@ -60,6 +58,12 @@ impl WasmRuntime {
 #[derive(Clone)]
 pub struct WasmTlsConnector;
 
+impl Default for WasmTlsConnector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WasmTlsConnector {
     pub fn new() -> Self {
         WasmTlsConnector
@@ -82,11 +86,17 @@ impl WasmUdpSocket {
 #[derive(Debug, Clone)]
 pub struct WasmBlockingHandle;
 
+impl Default for WasmBlockingHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WasmBlockingHandle {
     pub fn new() -> Self {
         WasmBlockingHandle
     }
-    
+
     pub fn execute_blocking<F, R>(&self, _f: F) -> io::Result<R>
     where
         F: FnOnce() -> R + Send + 'static,
@@ -102,12 +112,12 @@ impl WasmBlockingHandle {
 /// Unix domain socket (not supported in browsers)
 pub mod unix {
     use std::io;
-    
+
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     pub struct SocketAddr;
-    
+
     pub struct UnixStream;
-    
+
     impl UnixStream {
         pub fn unsupported() -> io::Result<Self> {
             Err(io::Error::new(
@@ -117,4 +127,3 @@ pub mod unix {
         }
     }
 }
-

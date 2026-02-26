@@ -3,23 +3,19 @@
 //! This module provides a custom runtime implementation that allows Arti
 //! to run in WebAssembly environments.
 
-use std::time::{Duration, Instant, SystemTime};
-use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::spawn_local;
-
+pub mod compat;
 mod sleep;
 mod spawn;
-mod time;
 mod stubs;
 pub mod tcp;
-pub mod compat;
+mod time;
 // mod traits_impl; // Temporarily disabled until tor-rtcompat is fully WASM-ready
 
+pub use compat::{TcpConnectFuture, TcpStream, WasmBlockingHandle, WasmTlsConnector};
 pub use sleep::WasmSleep;
-pub use time::WasmCoarseInstant;
-pub use stubs::{WasmUdpSocket, WasmUnixStream, WasmListener};
-pub use compat::{TcpStream, TcpConnectFuture, WasmTlsConnector, WasmBlockingHandle};
+pub use stubs::{WasmListener, WasmUdpSocket, WasmUnixStream};
 pub use tcp::WasmTcpListener;
+pub use time::WasmCoarseInstant;
 
 /// WASM-compatible runtime for Arti
 ///
@@ -42,13 +38,23 @@ impl WasmRuntime {
     /// Create a new WASM runtime with custom bridge URL
     pub fn with_bridge_url(bridge_url: String) -> Self {
         log::info!("Creating WasmRuntime with bridge: {}", bridge_url);
-        Self { bridge_url, meek_url: None }
+        Self {
+            bridge_url,
+            meek_url: None,
+        }
     }
 
     /// Create a new WASM runtime with WebSocket bridge + meek fallback
     pub fn with_meek_fallback(bridge_url: String, meek_url: String) -> Self {
-        log::info!("Creating WasmRuntime with bridge: {} + meek fallback: {}", bridge_url, meek_url);
-        Self { bridge_url, meek_url: Some(meek_url) }
+        log::info!(
+            "Creating WasmRuntime with bridge: {} + meek fallback: {}",
+            bridge_url,
+            meek_url
+        );
+        Self {
+            bridge_url,
+            meek_url: Some(meek_url),
+        }
     }
 
     /// Get the bridge URL
@@ -70,4 +76,3 @@ impl Default for WasmRuntime {
 
 // Re-export for convenience
 pub use spawn::WasmSpawner;
-

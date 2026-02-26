@@ -47,7 +47,7 @@ impl Default for ConnectionPoolConfig {
 }
 
 /// A pooled connection entry
-/// 
+///
 /// Note: In WASM, WebSocket connections are managed by the browser.
 /// This tracks metadata about connections we've created.
 #[derive(Debug)]
@@ -135,7 +135,7 @@ impl ConnectionPool {
     }
 
     /// Get a connection to a bridge (from pool or new)
-    /// 
+    ///
     /// Returns connection ID. In actual use, caller would use this ID
     /// with the actual WebSocket connection.
     pub fn get_connection(&mut self, bridge_url: &str) -> Option<PooledConnection> {
@@ -162,19 +162,19 @@ impl ConnectionPool {
     }
 
     /// Create a new connection entry
-    /// 
+    ///
     /// Call this when actually creating a new WebSocket connection.
     pub fn create_connection(&mut self, bridge_url: &str) -> PooledConnection {
         let id = self.next_id;
         self.next_id += 1;
         self.stats.connections_created += 1;
-        
+
         log::debug!("🆕 Creating new connection {} to {}", id, bridge_url);
         PooledConnection::new(id, bridge_url.to_string())
     }
 
     /// Return a connection to the pool
-    /// 
+    ///
     /// Call this when done with a connection but want to keep it for reuse.
     pub fn return_connection(&mut self, mut conn: PooledConnection) {
         // Check total pool size first
@@ -188,7 +188,11 @@ impl ConnectionPool {
         let pool = self.pools.entry(bridge_url.clone()).or_default();
 
         if pool.len() >= self.config.max_per_bridge {
-            log::debug!("Pool full for {}, dropping connection {}", bridge_url, conn.id);
+            log::debug!(
+                "Pool full for {}, dropping connection {}",
+                bridge_url,
+                conn.id
+            );
             return;
         }
 
@@ -196,7 +200,7 @@ impl ConnectionPool {
         pool.push_back(conn);
         self.stats.connections_returned += 1;
         self.update_pool_size();
-        
+
         log::debug!("📥 Connection returned to pool");
     }
 
@@ -286,13 +290,13 @@ mod tests {
     #[test]
     fn test_create_and_return_connection() {
         let mut pool = ConnectionPool::new();
-        
+
         let conn = pool.create_connection("ws://localhost:8080");
         assert_eq!(conn.id, 1);
-        
+
         pool.return_connection(conn);
         assert_eq!(pool.total_pooled(), 1);
-        
+
         let reused = pool.get_connection("ws://localhost:8080");
         assert!(reused.is_some());
         assert_eq!(reused.unwrap().id, 1);
@@ -301,11 +305,10 @@ mod tests {
     #[test]
     fn test_pool_miss() {
         let mut pool = ConnectionPool::new();
-        
+
         let result = pool.get_connection("ws://localhost:8080");
         assert!(result.is_none());
-        
+
         assert_eq!(pool.get_stats().pool_misses, 1);
     }
 }
-

@@ -71,8 +71,8 @@ impl Default for PaddingConfig {
         // Default values from Tor's padding-spec
         Self {
             enabled: true,
-            low_ms: 1500,   // 1.5 seconds minimum
-            high_ms: 9500,  // 9.5 seconds maximum
+            low_ms: 1500,           // 1.5 seconds minimum
+            high_ms: 9500,          // 9.5 seconds maximum
             idle_timeout_ms: 30000, // 30 seconds idle timeout
         }
     }
@@ -197,7 +197,10 @@ impl PaddingScheduler {
         // Generate new random interval for next padding
         self.next_interval_ms = Self::random_interval(&self.config);
 
-        log::trace!("Padding cell sent, next interval: {}ms", self.next_interval_ms);
+        log::trace!(
+            "Padding cell sent, next interval: {}ms",
+            self.next_interval_ms
+        );
     }
 
     /// Create a CELL_PADDING cell

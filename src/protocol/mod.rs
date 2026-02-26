@@ -8,31 +8,33 @@
 //! - Cell protocol
 //! - Certificate verification
 
-mod directory;
-mod relay;
+mod cell;
+mod certs;
+mod circuit_builder;
 mod consensus;
 mod consensus_verify;
-mod cell;
-mod ntor;
-mod circuit_builder;
-mod stream;
 mod crypto;
+mod directory;
 mod flow_control;
-mod certs;
+mod ntor;
+mod relay;
+mod stream;
 mod tls_stream;
 
-pub use directory::DirectoryManager;
-pub use relay::{Relay, RelayFlags, RelaySelector};
-pub use consensus::{Consensus, ConsensusParser};
 pub use cell::{Cell, CellCommand, RelayCell, RelayCommand};
-pub use ntor::{NtorHandshake, derive_circuit_keys};
+pub use certs::{CertificateVerifier, CertsCell, Ed25519Certificate, VerifiedRelay};
 pub use circuit_builder::{Circuit, CircuitBuilder};
-pub use stream::{StreamManager, TorStream, StreamBuilder};
-pub use crypto::{CircuitKeys, OnionCrypto, derive_circuit_keys as crypto_derive_keys};
-pub use flow_control::{CircuitFlowControl, StreamFlowControl};
-pub use certs::{CertsCell, CertificateVerifier, VerifiedRelay, Ed25519Certificate};
-pub use consensus_verify::{ConsensusVerifier, DirectoryAuthority, DirectorySignature, MIN_AUTHORITY_SIGNATURES};
+pub use consensus::{Consensus, ConsensusParser};
 pub use consensus_verify::DIRECTORY_AUTHORITIES;
+pub use consensus_verify::{
+    ConsensusVerifier, DirectoryAuthority, DirectorySignature, MIN_AUTHORITY_SIGNATURES,
+};
+pub use crypto::{derive_circuit_keys as crypto_derive_keys, CircuitKeys, OnionCrypto};
+pub use directory::DirectoryManager;
+pub use flow_control::{CircuitFlowControl, StreamFlowControl};
+pub use ntor::{derive_circuit_keys, NtorHandshake};
+pub use relay::{Relay, RelayFlags, RelaySelector};
+pub use stream::{StreamBuilder, StreamManager, TorStream};
 pub use tls_stream::TlsTorStream;
 
 /// Default HTTP port for directory queries
@@ -43,4 +45,3 @@ pub const FALLBACK_DIR_PORT: u16 = 9030;
 
 /// HTTPS port for encrypted directory queries
 pub const SECURE_DIR_PORT: u16 = 443;
-

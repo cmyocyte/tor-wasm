@@ -9,13 +9,13 @@
 //! which is fine — WASM is single-threaded.
 
 use futures::io::{AsyncRead, AsyncWrite};
-use std::io::{self, Result as IoResult};
+use std::io::Result as IoResult;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use super::websocket::WasmTcpStream;
 use super::meek::WasmMeekStream;
 use super::webrtc::WasmRtcStream;
+use super::websocket::WasmTcpStream;
 use super::webtunnel::WasmWebTunnelStream;
 
 /// A unified transport stream that wraps WebSocket, meek, or WebRTC connections.
@@ -90,11 +90,7 @@ impl AsyncRead for TransportStream {
 }
 
 impl AsyncWrite for TransportStream {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<IoResult<usize>> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<IoResult<usize>> {
         match self.get_mut() {
             TransportStream::WebSocket(stream) => Pin::new(stream).poll_write(cx, buf),
             TransportStream::Meek(stream) => Pin::new(stream).poll_write(cx, buf),

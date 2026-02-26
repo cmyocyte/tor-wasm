@@ -15,15 +15,11 @@
 //! drive_until_complete(&self.scheduler, rx).await
 //! ```
 
-use std::rc::Rc;
-use std::cell::RefCell;
-use super::scheduler::{
-    CooperativeCircuit, StreamHandle,
-    DEFAULT_SEND_TIMEOUT_MS, DEFAULT_RECEIVE_TIMEOUT_MS,
-    drive_until_complete,
-};
-use crate::protocol::{RelayCell, RelayCommand};
+use super::scheduler::{drive_until_complete, CooperativeCircuit, StreamHandle};
 use crate::error::{Result, TorError};
+use crate::protocol::{RelayCell, RelayCommand};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// A Tor stream using the cooperative scheduler
 pub struct CooperativeStream {
@@ -47,7 +43,10 @@ pub struct CooperativeStream {
 impl CooperativeStream {
     /// Create a new cooperative stream
     pub fn new(handle: StreamHandle, scheduler: Rc<RefCell<CooperativeCircuit>>) -> Self {
-        log::debug!("📡 CooperativeStream created for stream {}", handle.stream_id());
+        log::debug!(
+            "📡 CooperativeStream created for stream {}",
+            handle.stream_id()
+        );
         Self {
             handle,
             scheduler,
@@ -94,9 +93,12 @@ impl CooperativeStream {
         // Split data into cell-sized chunks (max 498 bytes per RELAY_DATA)
         const MAX_DATA_PER_CELL: usize = 498;
 
-        log::trace!("📤 Writing {} bytes to stream {} in {} chunks",
-            data.len(), self.handle.stream_id(),
-            (data.len() + MAX_DATA_PER_CELL - 1) / MAX_DATA_PER_CELL);
+        log::trace!(
+            "📤 Writing {} bytes to stream {} in {} chunks",
+            data.len(),
+            self.handle.stream_id(),
+            data.len().div_ceil(MAX_DATA_PER_CELL)
+        );
 
         for chunk in data.chunks(MAX_DATA_PER_CELL) {
             self.write_cell(chunk).await?;
@@ -107,17 +109,14 @@ impl CooperativeStream {
 
     /// Write a single cell's worth of data
     async fn write_cell(&mut self, data: &[u8]) -> Result<()> {
-        let cell = RelayCell::new(
-            RelayCommand::Data,
-            self.handle.stream_id(),
-            data.to_vec(),
-        );
+        let cell = RelayCell::new(RelayCommand::Data, self.handle.stream_id(), data.to_vec());
 
         // Queue the send - brief borrow!
         let rx = {
             let mut scheduler = self.scheduler.borrow_mut();
-            scheduler.queue_send(self.handle.stream_id(), cell, self.send_timeout_ms)
-                .map_err(|e| TorError::from(e))?
+            scheduler
+                .queue_send(self.handle.stream_id(), cell, self.send_timeout_ms)
+                .map_err(TorError::from)?
         };
         // Borrow released!
 
@@ -144,8 +143,9 @@ impl CooperativeStream {
             // Register to receive - brief borrow!
             let rx = {
                 let mut scheduler = self.scheduler.borrow_mut();
-                scheduler.register_receive(self.handle.stream_id(), self.recv_timeout_ms)
-                    .map_err(|e| TorError::from(e))?
+                scheduler
+                    .register_receive(self.handle.stream_id(), self.recv_timeout_ms)
+                    .map_err(TorError::from)?
             };
             // Borrow released!
 
@@ -156,7 +156,11 @@ impl CooperativeStream {
                 RelayCommand::Data => {
                     let len = cell.data.len().min(buf.len());
                     buf[..len].copy_from_slice(&cell.data[..len]);
-                    log::trace!("📥 Read {} bytes from stream {}", len, self.handle.stream_id());
+                    log::trace!(
+                        "📥 Read {} bytes from stream {}",
+                        len,
+                        self.handle.stream_id()
+                    );
                     return Ok(len);
                 }
                 RelayCommand::End => {
@@ -171,8 +175,11 @@ impl CooperativeStream {
                     continue;
                 }
                 other => {
-                    log::warn!("⚠️ Unexpected cell type on stream {}: {:?}",
-                        self.handle.stream_id(), other);
+                    log::warn!(
+                        "⚠️ Unexpected cell type on stream {}: {:?}",
+                        self.handle.stream_id(),
+                        other
+                    );
                     // Continue loop to try again
                     continue;
                 }
@@ -193,7 +200,11 @@ impl CooperativeStream {
             }
         }
 
-        log::info!("📥 Stream {} read {} total bytes", self.handle.stream_id(), result.len());
+        log::info!(
+            "📥 Stream {} read {} total bytes",
+            self.handle.stream_id(),
+            result.len()
+        );
         Ok(result)
     }
 
@@ -240,7 +251,10 @@ impl Drop for CooperativeStream {
         if !self.closed {
             // Try to close gracefully, but don't block
             // The scheduler will clean up eventually
-            log::debug!("⚠️ Stream {} dropped without close()", self.handle.stream_id());
+            log::debug!(
+                "⚠️ Stream {} dropped without close()",
+                self.handle.stream_id()
+            );
         }
     }
 }

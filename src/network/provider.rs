@@ -5,11 +5,10 @@
 
 use super::{NetworkConfig, NetworkStats};
 use crate::transport::WasmTcpStream;
-use crate::error::{Result, TorError};
+use std::cell::UnsafeCell;
 use std::io::Result as IoResult;
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::cell::UnsafeCell;
 
 /// WASM-compatible TCP provider for Arti
 ///
@@ -18,7 +17,7 @@ use std::cell::UnsafeCell;
 pub struct WasmTcpProvider {
     /// Network configuration
     config: NetworkConfig,
-    
+
     /// Network statistics (UnsafeCell is safe in single-threaded WASM)
     stats: Rc<UnsafeCell<NetworkStats>>,
 }
@@ -28,16 +27,19 @@ impl WasmTcpProvider {
     pub fn new() -> Self {
         Self::with_config(NetworkConfig::default())
     }
-    
+
     /// Create a new TCP provider with custom configuration
     pub fn with_config(config: NetworkConfig) -> Self {
-        log::info!("Creating WasmTcpProvider with bridge: {}", config.bridge_url);
+        log::info!(
+            "Creating WasmTcpProvider with bridge: {}",
+            config.bridge_url
+        );
         Self {
             config,
             stats: Rc::new(UnsafeCell::new(NetworkStats::default())),
         }
     }
-    
+
     /// Connect to a relay with retry logic
     pub async fn connect_with_retry(&self, addr: &SocketAddr) -> IoResult<WasmTcpStream> {
         let max_retries = if self.config.retry_on_failure {
@@ -45,58 +47,71 @@ impl WasmTcpProvider {
         } else {
             0
         };
-        
+
         let mut last_error = None;
-        
+
         for attempt in 0..=max_retries {
             if attempt > 0 {
                 log::warn!("Retry attempt {} for {}", attempt, addr);
                 // Wait a bit before retrying
                 gloo_timers::future::TimeoutFuture::new(1000 * attempt).await;
             }
-            
+
             match self.connect_once(addr).await {
                 Ok(stream) => {
                     self.record_success();
                     return Ok(stream);
                 }
                 Err(e) => {
-                    log::warn!("Connection attempt {} failed for {}: {}", attempt + 1, addr, e);
+                    log::warn!(
+                        "Connection attempt {} failed for {}: {}",
+                        attempt + 1,
+                        addr,
+                        e
+                    );
                     last_error = Some(e);
                 }
             }
         }
-        
+
         self.record_failure();
         Err(last_error.unwrap())
     }
-    
+
     /// Single connection attempt with timeout
     async fn connect_once(&self, addr: &SocketAddr) -> IoResult<WasmTcpStream> {
-        log::info!("Connecting to relay at {} (timeout: {}s)", addr, self.config.connect_timeout);
-        
+        log::info!(
+            "Connecting to relay at {} (timeout: {}s)",
+            addr,
+            self.config.connect_timeout
+        );
+
         self.record_attempt();
-        
+
         // Build WebSocket URL
         let url = self.config.build_url(addr);
-        
+
         // Create connection future
         let connect_future = WasmTcpStream::connect(&url);
-        
+
         // Create timeout (5 seconds default)
         let timeout_ms = (self.config.connect_timeout * 1000) as u32;
-        
+
         // Race connection against timeout using a simple approach
         // We'll spawn the connection and check if it completes within timeout
         let start = js_sys::Date::now();
-        
+
         // Try to connect
         match connect_future.await {
             Ok(stream) => {
                 let elapsed = ((js_sys::Date::now() - start) / 1000.0) as u64;
                 if elapsed > self.config.connect_timeout {
-                    log::warn!("Connection to {} succeeded but took {}s (timeout was {}s)", 
-                        addr, elapsed, self.config.connect_timeout);
+                    log::warn!(
+                        "Connection to {} succeeded but took {}s (timeout was {}s)",
+                        addr,
+                        elapsed,
+                        self.config.connect_timeout
+                    );
                 } else {
                     log::info!("Successfully connected to {} in {}s", addr, elapsed);
                 }
@@ -110,52 +125,50 @@ impl WasmTcpProvider {
             }
         }
     }
-    
+
     /// Get current network statistics
     pub fn get_stats(&self) -> NetworkStats {
-        unsafe {
-            (*self.stats.get()).clone()
-        }
+        unsafe { (*self.stats.get()).clone() }
     }
 
     /// Get the bridge URL
     pub fn bridge_url(&self) -> &str {
         &self.config.bridge_url
     }
-    
+
     /// Reset statistics
     pub fn reset_stats(&self) {
         unsafe {
             *self.stats.get() = NetworkStats::default();
         }
     }
-    
+
     // Statistics helpers
-    
+
     fn record_attempt(&self) {
         unsafe {
             (*self.stats.get()).connections_attempted += 1;
         }
     }
-    
+
     fn record_success(&self) {
         unsafe {
             (*self.stats.get()).connections_successful += 1;
         }
     }
-    
+
     fn record_failure(&self) {
         unsafe {
             (*self.stats.get()).connections_failed += 1;
         }
     }
-    
+
     fn increment_active(&self) {
         unsafe {
             (*self.stats.get()).active_connections += 1;
         }
     }
-    
+
     pub fn decrement_active(&self) {
         unsafe {
             let stats = &mut *self.stats.get();
@@ -164,13 +177,13 @@ impl WasmTcpProvider {
             }
         }
     }
-    
+
     pub fn record_bytes_sent(&self, bytes: u64) {
         unsafe {
             (*self.stats.get()).bytes_sent += bytes;
         }
     }
-    
+
     pub fn record_bytes_received(&self, bytes: u64) {
         unsafe {
             (*self.stats.get()).bytes_received += bytes;
@@ -197,27 +210,27 @@ impl Clone for WasmTcpProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_provider_creation() {
         let provider = WasmTcpProvider::new();
         let stats = provider.get_stats();
         assert_eq!(stats.connections_attempted, 0);
     }
-    
+
     #[test]
     fn test_stats_tracking() {
         let provider = WasmTcpProvider::new();
-        
+
         provider.record_attempt();
         provider.record_success();
-        
+
         let stats = provider.get_stats();
         assert_eq!(stats.connections_attempted, 1);
         assert_eq!(stats.connections_successful, 1);
         assert_eq!(stats.success_rate(), 100.0);
     }
-    
+
     #[test]
     fn test_config_override() {
         let config = NetworkConfig {
@@ -225,10 +238,9 @@ mod tests {
             connect_timeout: 60,
             ..Default::default()
         };
-        
+
         let provider = WasmTcpProvider::with_config(config);
         assert_eq!(provider.config.bridge_url, "ws://custom:9999");
         assert_eq!(provider.config.connect_timeout, 60);
     }
 }
-

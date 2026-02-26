@@ -57,7 +57,7 @@ pub struct Certificate {
 }
 
 /// Parsed Ed25519 certificate (Tor's tor-cert format)
-/// 
+///
 /// Format:
 /// - VERSION (1 byte): Always 0x01
 /// - CERT_TYPE (1 byte): Type of this certificate
@@ -89,16 +89,18 @@ impl Ed25519Certificate {
     /// Parse an Ed25519 certificate from raw bytes
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < 104 {
-            return Err(TorError::CertificateError(
-                format!("Certificate too short: {} bytes, need at least 104", data.len())
-            ));
+            return Err(TorError::CertificateError(format!(
+                "Certificate too short: {} bytes, need at least 104",
+                data.len()
+            )));
         }
 
         let version = data[0];
         if version != 0x01 {
-            return Err(TorError::CertificateError(
-                format!("Unknown certificate version: {}", version)
-            ));
+            return Err(TorError::CertificateError(format!(
+                "Unknown certificate version: {}",
+                version
+            )));
         }
 
         let cert_type = data[1];
@@ -115,7 +117,7 @@ impl Ed25519Certificate {
         for _ in 0..n_extensions {
             if offset + 4 > data.len() {
                 return Err(TorError::CertificateError(
-                    "Extension header truncated".into()
+                    "Extension header truncated".into(),
                 ));
             }
             let ext_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
@@ -124,9 +126,11 @@ impl Ed25519Certificate {
 
         // Signature is the last 64 bytes
         if data.len() < offset + 64 {
-            return Err(TorError::CertificateError(
-                format!("Certificate truncated: expected signature at offset {}, len {}", offset, data.len())
-            ));
+            return Err(TorError::CertificateError(format!(
+                "Certificate truncated: expected signature at offset {}, len {}",
+                offset,
+                data.len()
+            )));
         }
 
         let sig_start = data.len() - 64;
@@ -156,7 +160,9 @@ impl Ed25519Certificate {
 
         verifying_key
             .verify(&self.raw_data, &signature)
-            .map_err(|e| TorError::CertificateError(format!("Signature verification failed: {}", e)))?;
+            .map_err(|e| {
+                TorError::CertificateError(format!("Signature verification failed: {}", e))
+            })?;
 
         Ok(())
     }
@@ -192,9 +198,10 @@ impl CertsCell {
 
         for i in 0..n_certs {
             if offset + 3 > data.len() {
-                return Err(TorError::CertificateError(
-                    format!("CERTS cell truncated at certificate {}", i)
-                ));
+                return Err(TorError::CertificateError(format!(
+                    "CERTS cell truncated at certificate {}",
+                    i
+                )));
             }
 
             let cert_type = data[offset];
@@ -202,10 +209,12 @@ impl CertsCell {
             offset += 3;
 
             if offset + cert_len > data.len() {
-                return Err(TorError::CertificateError(
-                    format!("Certificate {} data truncated: need {} bytes, have {}", 
-                            i, cert_len, data.len() - offset)
-                ));
+                return Err(TorError::CertificateError(format!(
+                    "Certificate {} data truncated: need {} bytes, have {}",
+                    i,
+                    cert_len,
+                    data.len() - offset
+                )));
             }
 
             let cert_data = data[offset..offset + cert_len].to_vec();
@@ -276,13 +285,15 @@ impl CertificateVerifier {
     /// Add multiple fingerprints from hex strings
     pub fn add_fingerprints_from_hex(&mut self, fingerprints: &[&str]) -> Result<()> {
         for fp_hex in fingerprints {
-            let bytes = hex::decode(fp_hex)
-                .map_err(|e| TorError::CertificateError(format!("Invalid fingerprint hex: {}", e)))?;
-            
+            let bytes = hex::decode(fp_hex).map_err(|e| {
+                TorError::CertificateError(format!("Invalid fingerprint hex: {}", e))
+            })?;
+
             if bytes.len() != 20 {
-                return Err(TorError::CertificateError(
-                    format!("Fingerprint must be 20 bytes, got {}", bytes.len())
-                ));
+                return Err(TorError::CertificateError(format!(
+                    "Fingerprint must be 20 bytes, got {}",
+                    bytes.len()
+                )));
             }
 
             let mut fp = [0u8; 20];
@@ -307,24 +318,22 @@ impl CertificateVerifier {
         log::info!("Verifying relay certificate chain...");
 
         // Step 1: Parse and verify Type 4 (Ed25519 signing key certificate)
-        let signing_key_cert = certs_cell.get_cert(4)
-            .ok_or_else(|| TorError::CertificateError(
-                "Missing Ed25519 signing key certificate (type 4)".into()
-            ))?;
+        let signing_key_cert = certs_cell.get_cert(4).ok_or_else(|| {
+            TorError::CertificateError("Missing Ed25519 signing key certificate (type 4)".into())
+        })?;
 
         let signing_cert = Ed25519Certificate::parse(&signing_key_cert.data)?;
 
         if signing_cert.is_expired() {
             return Err(TorError::CertificateError(
-                "Signing key certificate (type 4) is expired".into()
+                "Signing key certificate (type 4) is expired".into(),
             ));
         }
 
         // Step 2: Get the Ed25519 identity key and verify signing key cert signature
-        let identity_key = certs_cell.ed25519_identity
-            .ok_or_else(|| TorError::CertificateError(
-                "Could not extract Ed25519 identity from CERTS cell".into()
-            ))?;
+        let identity_key = certs_cell.ed25519_identity.ok_or_else(|| {
+            TorError::CertificateError("Could not extract Ed25519 identity from CERTS cell".into())
+        })?;
 
         // Verify: signing key cert IS signed by the identity key
         signing_cert.verify_signature(&identity_key)?;
@@ -338,7 +347,7 @@ impl CertificateVerifier {
 
             if tls_cert.is_expired() {
                 return Err(TorError::CertificateError(
-                    "TLS link certificate (type 5) is expired".into()
+                    "TLS link certificate (type 5) is expired".into(),
                 ));
             }
 
@@ -356,17 +365,20 @@ impl CertificateVerifier {
             // For now, verify the cert is well-formed and contains a key
             if cross_cert.data.len() < 36 {
                 return Err(TorError::CertificateError(
-                    "Ed25519-RSA cross-cert (type 7) is too short".into()
+                    "Ed25519-RSA cross-cert (type 7) is too short".into(),
                 ));
             }
-            log::info!("  Type 7 cert: Ed25519-RSA cross-cert present ({} bytes)", cross_cert.data.len());
+            log::info!(
+                "  Type 7 cert: Ed25519-RSA cross-cert present ({} bytes)",
+                cross_cert.data.len()
+            );
         }
 
         // Step 5: Check the fingerprint is in our consensus
         if !self.consensus_fingerprints.is_empty() {
             if !self.consensus_fingerprints.contains(expected_fingerprint) {
                 return Err(TorError::CertificateError(
-                    "Relay fingerprint not found in consensus".into()
+                    "Relay fingerprint not found in consensus".into(),
                 ));
             }
             log::info!("  Fingerprint matched in consensus");
@@ -381,21 +393,21 @@ impl CertificateVerifier {
     }
 
     /// Quick verification: just check we got valid-looking certificates
-    /// 
+    ///
     /// This is a lighter check for when we just want to make sure
     /// the relay sent proper certificates without full verification.
     pub fn quick_verify(&self, certs_cell: &CertsCell) -> Result<()> {
         // Check we have at least a signing key certificate
         if certs_cell.get_cert(4).is_none() {
             return Err(TorError::CertificateError(
-                "Missing signing key certificate".into()
+                "Missing signing key certificate".into(),
             ));
         }
 
         // Check we could extract an identity
         if certs_cell.ed25519_identity.is_none() && certs_cell.ed25519_signing_key.is_none() {
             return Err(TorError::CertificateError(
-                "Could not extract any Ed25519 keys from certificates".into()
+                "Could not extract any Ed25519 keys from certificates".into(),
             ));
         }
 
@@ -447,4 +459,3 @@ mod tests {
         assert_eq!(CertType::from_u8(99), None);
     }
 }
-

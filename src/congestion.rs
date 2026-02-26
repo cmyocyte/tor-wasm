@@ -28,20 +28,15 @@
 use std::time::Instant;
 
 /// Congestion control algorithm selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CongestionAlgorithm {
     /// Fixed windows (legacy, no congestion control)
     Fixed,
     /// Tor-Vegas (default, recommended)
+    #[default]
     Vegas,
     /// Tor-NOLA (experimental)
     Nola,
-}
-
-impl Default for CongestionAlgorithm {
-    fn default() -> Self {
-        CongestionAlgorithm::Vegas
-    }
 }
 
 /// RTT sample
@@ -105,16 +100,8 @@ impl RttEstimator {
         self.last_sample = Some(sample);
 
         // Update min/max
-        self.min_rtt_ms = Some(
-            self.min_rtt_ms
-                .map(|min| min.min(rtt_ms))
-                .unwrap_or(rtt_ms),
-        );
-        self.max_rtt_ms = Some(
-            self.max_rtt_ms
-                .map(|max| max.max(rtt_ms))
-                .unwrap_or(rtt_ms),
-        );
+        self.min_rtt_ms = Some(self.min_rtt_ms.map(|min| min.min(rtt_ms)).unwrap_or(rtt_ms));
+        self.max_rtt_ms = Some(self.max_rtt_ms.map(|max| max.max(rtt_ms)).unwrap_or(rtt_ms));
 
         // Update SRTT using EWMA
         match self.srtt_ms {
@@ -125,11 +112,7 @@ impl RttEstimator {
             }
             Some(srtt) => {
                 // EWMA update: SRTT = (1-α)×SRTT + α×RTT
-                let diff = if rtt_ms > srtt {
-                    rtt_ms - srtt
-                } else {
-                    srtt - rtt_ms
-                };
+                let diff = rtt_ms.abs_diff(srtt);
 
                 let new_rttvar = ((1.0 - Self::BETA) * self.rttvar_ms.unwrap_or(0) as f32
                     + Self::BETA * diff as f32) as u32;

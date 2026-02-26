@@ -78,7 +78,7 @@ impl RateLimiter {
     /// Check if a new circuit can be created
     pub fn can_create_circuit(&mut self) -> bool {
         self.cleanup_old_entries();
-        
+
         let count = self.circuit_timestamps.len() as u32;
         if count >= self.config.circuits_per_minute {
             log::warn!(
@@ -128,7 +128,7 @@ impl RateLimiter {
     /// Check if bandwidth limit allows sending data
     pub fn can_send_bytes(&mut self, stream_id: u16, bytes: u64) -> bool {
         let now = now_ms();
-        
+
         let (current_bytes, window_start) = self
             .bandwidth_tracking
             .get(&stream_id)
@@ -159,9 +159,9 @@ impl RateLimiter {
     /// Record bytes sent
     pub fn record_bytes_sent(&mut self, stream_id: u16, bytes: u64) {
         let now = now_ms();
-        
+
         let entry = self.bandwidth_tracking.entry(stream_id).or_insert((0, now));
-        
+
         // Reset window if expired
         if now.saturating_sub(entry.1) >= 1000 {
             *entry = (bytes, now);
@@ -238,10 +238,10 @@ mod tests {
         // Should allow first 3 circuits
         assert!(limiter.can_create_circuit());
         limiter.record_circuit_created(1);
-        
+
         assert!(limiter.can_create_circuit());
         limiter.record_circuit_created(2);
-        
+
         assert!(limiter.can_create_circuit());
         limiter.record_circuit_created(3);
 
@@ -261,7 +261,7 @@ mod tests {
         // Should allow first 2 streams
         assert!(limiter.can_open_stream(1));
         limiter.record_stream_opened(1, 1);
-        
+
         assert!(limiter.can_open_stream(1));
         limiter.record_stream_opened(1, 2);
 
@@ -290,4 +290,3 @@ mod tests {
         assert!(!limiter.can_send_bytes(1, 200));
     }
 }
-

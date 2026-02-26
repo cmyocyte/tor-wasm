@@ -105,6 +105,10 @@ mod tests {
             }
         }
         // ~5% = ~500 out of 10000, allow ±150
-        assert!(count > 200 && count < 800, "perturbation rate: {}/10000", count);
+        assert!(
+            count > 200 && count < 800,
+            "perturbation rate: {}/10000",
+            count
+        );
     }
 }

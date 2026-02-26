@@ -4,16 +4,16 @@
 //! Integrates with `flow_control::StreamFlowControl` for spec-compliant SENDME
 //! window management (500-cell initial window, 50-cell SENDME increments).
 
-use super::{Circuit, RelayCell, RelayCommand};
 use super::flow_control::StreamFlowControl;
+use super::{Circuit, RelayCell, RelayCommand};
 use crate::error::{Result, TorError};
 use futures::io::{AsyncRead, AsyncWrite};
-use std::collections::VecDeque;
-use std::pin::Pin;
-use std::task::{Context, Poll, Waker};
-use std::io;
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::io;
+use std::pin::Pin;
+use std::rc::Rc;
+use std::task::{Context, Poll, Waker};
 
 /// Stream manager for opening streams through circuits
 pub struct StreamManager {
@@ -44,28 +44,31 @@ impl StreamManager {
         // ADDRPORT is "host:port" null-terminated
         let target = format!("{}:{}\0", host, port);
 
-        let begin_cell = RelayCell::new(
-            RelayCommand::Begin,
-            stream_id,
-            target.as_bytes().to_vec(),
-        );
+        let begin_cell = RelayCell::new(RelayCommand::Begin, stream_id, target.as_bytes().to_vec());
 
         log::info!("  Sending RELAY_BEGIN cell (stream_id={})", stream_id);
 
         // Send RELAY_BEGIN through circuit (borrow mutably)
-        self.circuit.borrow_mut().send_relay_cell(&begin_cell).await?;
+        self.circuit
+            .borrow_mut()
+            .send_relay_cell(&begin_cell)
+            .await?;
 
         // Wait for RELAY_CONNECTED response
         let response = self.circuit.borrow_mut().receive_relay_cell().await?;
 
-        log::info!("  Received response: {:?} stream_id={}", response.command, response.stream_id);
+        log::info!(
+            "  Received response: {:?} stream_id={}",
+            response.command,
+            response.stream_id
+        );
 
         // Verify it's for our stream
         if response.stream_id != stream_id {
-            return Err(TorError::Stream(
-                format!("Wrong stream ID in response: expected {}, got {}",
-                    stream_id, response.stream_id)
-            ));
+            return Err(TorError::Stream(format!(
+                "Wrong stream ID in response: expected {}, got {}",
+                stream_id, response.stream_id
+            )));
         }
 
         // Check response type
@@ -81,22 +84,22 @@ impl StreamManager {
                     read_waker: None,
                     closed: false,
                 })
-            },
+            }
             RelayCommand::End => {
                 let reason = if !response.data.is_empty() {
                     response.data[0]
                 } else {
                     0
                 };
-                Err(TorError::Stream(
-                    format!("Stream connection refused (reason: {})", reason)
-                ))
-            },
-            _ => {
-                Err(TorError::ProtocolError(
-                    format!("Unexpected response to RELAY_BEGIN: {:?}", response.command)
-                ))
+                Err(TorError::Stream(format!(
+                    "Stream connection refused (reason: {})",
+                    reason
+                )))
             }
+            _ => Err(TorError::ProtocolError(format!(
+                "Unexpected response to RELAY_BEGIN: {:?}",
+                response.command
+            ))),
         }
     }
 
@@ -165,11 +168,7 @@ impl TorStream {
         log::info!("Closing stream {}", self.stream_id);
 
         // Create RELAY_END cell (reason: DONE = 6)
-        let end_cell = RelayCell::new(
-            RelayCommand::End,
-            self.stream_id,
-            vec![6],
-        );
+        let end_cell = RelayCell::new(RelayCommand::End, self.stream_id, vec![6]);
 
         // Send RELAY_END through circuit
         let _ = self.circuit.borrow_mut().send_relay_cell(&end_cell).await;
@@ -281,7 +280,8 @@ impl TorStream {
         // Check flow control send window
         if !self.flow_control.can_send() {
             return Err(TorError::Stream(format!(
-                "Stream {} send window exhausted", self.stream_id
+                "Stream {} send window exhausted",
+                self.stream_id
             )));
         }
 
@@ -290,14 +290,14 @@ impl TorStream {
         let to_send = data.len().min(max_data_size);
 
         // Create RELAY_DATA cell
-        let data_cell = RelayCell::new(
-            RelayCommand::Data,
-            self.stream_id,
-            data[..to_send].to_vec(),
-        );
+        let data_cell =
+            RelayCell::new(RelayCommand::Data, self.stream_id, data[..to_send].to_vec());
 
         // Send through circuit
-        self.circuit.borrow_mut().send_relay_cell(&data_cell).await?;
+        self.circuit
+            .borrow_mut()
+            .send_relay_cell(&data_cell)
+            .await?;
 
         // Decrement send window via flow control
         self.flow_control.on_send()?;
@@ -322,7 +322,10 @@ impl TorStream {
             vec![], // Stream-level SENDME has empty payload
         );
 
-        self.circuit.borrow_mut().send_relay_cell(&sendme_cell).await?;
+        self.circuit
+            .borrow_mut()
+            .send_relay_cell(&sendme_cell)
+            .await?;
 
         Ok(())
     }
@@ -354,8 +357,11 @@ impl TorStream {
             // Check if it's for our stream (stream_id 0 = circuit-level)
             if relay_cell.stream_id != self.stream_id && relay_cell.stream_id != 0 {
                 // Buffer data for other streams (best-effort; proper mux in stream_mux.rs)
-                log::debug!("Received cell for stream {} (expected {}), dropping",
-                    relay_cell.stream_id, self.stream_id);
+                log::debug!(
+                    "Received cell for stream {} (expected {}), dropping",
+                    relay_cell.stream_id,
+                    self.stream_id
+                );
                 continue;
             }
 
@@ -384,23 +390,24 @@ impl TorStream {
                     }
 
                     return Ok(len);
-                },
+                }
                 RelayCommand::End => {
                     // Stream closed by remote
                     self.closed = true;
                     return Ok(0); // EOF
-                },
+                }
                 RelayCommand::Sendme => {
                     // Peer acknowledged our data — replenish send window
                     self.flow_control.on_sendme_received();
 
                     // Continue loop to get actual data
                     continue;
-                },
+                }
                 _ => {
-                    return Err(TorError::ProtocolError(
-                        format!("Unexpected relay command: {:?}", relay_cell.command)
-                    ));
+                    return Err(TorError::ProtocolError(format!(
+                        "Unexpected relay command: {:?}",
+                        relay_cell.command
+                    )));
                 }
             }
         }
@@ -509,17 +516,17 @@ impl StreamBuilder {
             manager: StreamManager::new(circuit),
         }
     }
-    
+
     /// Open a stream to a host:port
     pub async fn connect(&mut self, host: &str, port: u16) -> Result<TorStream> {
         self.manager.open_stream(host, port).await
     }
-    
+
     /// Open an HTTP stream
     pub async fn http(&mut self, host: &str) -> Result<TorStream> {
         self.connect(host, 80).await
     }
-    
+
     /// Open an HTTPS stream
     pub async fn https(&mut self, host: &str) -> Result<TorStream> {
         self.connect(host, 443).await
@@ -530,7 +537,7 @@ impl StreamBuilder {
 mod tests {
     use super::*;
     use crate::protocol::{CircuitKeys, Relay};
-    
+
     fn create_test_keys() -> CircuitKeys {
         CircuitKeys {
             forward_key: [1u8; 16],
@@ -541,7 +548,7 @@ mod tests {
             backward_digest: [6u8; 20],
         }
     }
-    
+
     #[test]
     fn test_stream_manager_creation() {
         let circuit = Rc::new(RefCell::new(Circuit::new(
@@ -549,11 +556,11 @@ mod tests {
             vec![],
             create_test_keys(),
         )));
-        
+
         let manager = StreamManager::new(circuit);
         assert_eq!(manager.next_stream_id, 1);
     }
-    
+
     #[test]
     fn test_stream_id_allocation() {
         let circuit = Rc::new(RefCell::new(Circuit::new(
@@ -561,14 +568,14 @@ mod tests {
             vec![],
             create_test_keys(),
         )));
-        
+
         let mut manager = StreamManager::new(circuit);
-        
+
         assert_eq!(manager.allocate_stream_id(), 1);
         assert_eq!(manager.allocate_stream_id(), 2);
         assert_eq!(manager.allocate_stream_id(), 3);
     }
-    
+
     #[test]
     fn test_stream_id_wrapping() {
         let circuit = Rc::new(RefCell::new(Circuit::new(
@@ -576,12 +583,11 @@ mod tests {
             vec![],
             create_test_keys(),
         )));
-        
+
         let mut manager = StreamManager::new(circuit);
         manager.next_stream_id = u16::MAX;
-        
+
         assert_eq!(manager.allocate_stream_id(), u16::MAX);
         assert_eq!(manager.allocate_stream_id(), 1); // Wrapped to 1 (skip 0)
     }
 }
-

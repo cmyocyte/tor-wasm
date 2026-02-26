@@ -4,7 +4,7 @@
 //! Cells are the basic unit of communication in the Tor protocol.
 
 use crate::error::{Result, TorError};
-use std::io::{self, Write};
+use std::io::Write;
 
 /// Cell command types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,10 +80,10 @@ impl CellCommand {
 pub struct Cell {
     /// Circuit ID (4 bytes for v4+ protocol)
     pub circuit_id: u32,
-    
+
     /// Command
     pub command: CellCommand,
-    
+
     /// Payload (509 bytes for fixed-length cells)
     pub payload: Vec<u8>,
 }
@@ -91,10 +91,10 @@ pub struct Cell {
 impl Cell {
     /// Cell size (514 bytes total: 4 circuit_id + 1 command + 509 payload)
     pub const SIZE: usize = 514;
-    
+
     /// Payload size for fixed-length cells
     pub const PAYLOAD_SIZE: usize = 509;
-    
+
     /// Create a new cell
     pub fn new(circuit_id: u32, command: CellCommand, payload: Vec<u8>) -> Self {
         Self {
@@ -103,51 +103,51 @@ impl Cell {
             payload,
         }
     }
-    
+
     /// Create a RELAY cell
     pub fn relay(circuit_id: u32, relay_payload: Vec<u8>) -> Self {
         Self::new(circuit_id, CellCommand::Relay, relay_payload)
     }
-    
+
     /// Serialize cell to bytes
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         let mut buf = Vec::with_capacity(Self::SIZE);
-        
+
         // Circuit ID (4 bytes, big-endian)
         buf.write_all(&self.circuit_id.to_be_bytes())
             .map_err(|e| TorError::Internal(format!("Write circuit_id failed: {}", e)))?;
-        
+
         // Command (1 byte)
         buf.push(self.command as u8);
-        
+
         // Payload (pad to 509 bytes)
         buf.write_all(&self.payload)
             .map_err(|e| TorError::Internal(format!("Write payload failed: {}", e)))?;
-        
+
         // Pad to fixed size
         while buf.len() < Self::SIZE {
             buf.push(0);
         }
-        
+
         Ok(buf)
     }
-    
+
     /// Parse cell from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
             return Err(TorError::ProtocolError("Cell too short".into()));
         }
-        
+
         // Parse circuit ID (4 bytes, big-endian)
         let circuit_id = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-        
+
         // Parse command
         let command = CellCommand::from_u8(data[4])
             .ok_or_else(|| TorError::ProtocolError(format!("Unknown command: {}", data[4])))?;
-        
+
         // Parse payload
         let payload = data[5..Self::SIZE].to_vec();
-        
+
         Ok(Self {
             circuit_id,
             command,
@@ -221,19 +221,19 @@ impl RelayCommand {
 pub struct RelayCell {
     /// Relay command
     pub command: RelayCommand,
-    
+
     /// Recognized (always 0 for outgoing)
     pub recognized: u16,
-    
+
     /// Stream ID
     pub stream_id: u16,
-    
+
     /// Digest (4 bytes)
     pub digest: [u8; 4],
-    
+
     /// Length of data
     pub length: u16,
-    
+
     /// Data (up to 498 bytes)
     pub data: Vec<u8>,
 }
@@ -241,7 +241,7 @@ pub struct RelayCell {
 impl RelayCell {
     /// Maximum data size in relay cell
     pub const MAX_DATA_SIZE: usize = 498;
-    
+
     /// Create a new relay cell
     pub fn new(command: RelayCommand, stream_id: u16, data: Vec<u8>) -> Self {
         Self {
@@ -253,63 +253,64 @@ impl RelayCell {
             data,
         }
     }
-    
+
     /// Serialize relay cell to bytes (for inclusion in Cell payload)
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         let mut buf = Vec::with_capacity(Cell::PAYLOAD_SIZE);
-        
+
         // Relay command (1 byte)
         buf.push(self.command as u8);
-        
+
         // Recognized (2 bytes, big-endian)
         buf.write_all(&self.recognized.to_be_bytes())
             .map_err(|e| TorError::Internal(format!("Write recognized failed: {}", e)))?;
-        
+
         // Stream ID (2 bytes, big-endian)
         buf.write_all(&self.stream_id.to_be_bytes())
             .map_err(|e| TorError::Internal(format!("Write stream_id failed: {}", e)))?;
-        
+
         // Digest (4 bytes)
         buf.write_all(&self.digest)
             .map_err(|e| TorError::Internal(format!("Write digest failed: {}", e)))?;
-        
+
         // Length (2 bytes, big-endian)
         buf.write_all(&self.length.to_be_bytes())
             .map_err(|e| TorError::Internal(format!("Write length failed: {}", e)))?;
-        
+
         // Data
         buf.write_all(&self.data)
             .map_err(|e| TorError::Internal(format!("Write data failed: {}", e)))?;
-        
+
         // Pad to Cell::PAYLOAD_SIZE
         while buf.len() < Cell::PAYLOAD_SIZE {
             buf.push(0);
         }
-        
+
         Ok(buf)
     }
-    
+
     /// Parse relay cell from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 11 {
             return Err(TorError::ProtocolError("Relay cell too short".into()));
         }
-        
-        let command = RelayCommand::from_u8(data[0])
-            .ok_or_else(|| TorError::ProtocolError(format!("Unknown relay command: {}", data[0])))?;
-        
+
+        let command = RelayCommand::from_u8(data[0]).ok_or_else(|| {
+            TorError::ProtocolError(format!("Unknown relay command: {}", data[0]))
+        })?;
+
         let recognized = u16::from_be_bytes([data[1], data[2]]);
         let stream_id = u16::from_be_bytes([data[3], data[4]]);
         let digest = [data[5], data[6], data[7], data[8]];
         let length = u16::from_be_bytes([data[9], data[10]]);
-        
+
         let data_end = 11 + length as usize;
         if data_end > data.len() {
             return Err(TorError::ProtocolError("Relay cell data truncated".into()));
         }
-        
+
         let cell_data = data[11..data_end].to_vec();
-        
+
         Ok(Self {
             command,
             recognized,
@@ -324,28 +325,27 @@ impl RelayCell {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_cell_serialization() {
         let cell = Cell::new(12345, CellCommand::Create2, vec![1, 2, 3, 4]);
         let bytes = cell.to_bytes().unwrap();
         assert_eq!(bytes.len(), Cell::SIZE);
-        
+
         let parsed = Cell::from_bytes(&bytes).unwrap();
         assert_eq!(parsed.circuit_id, 12345);
         assert_eq!(parsed.command as u8, CellCommand::Create2 as u8);
     }
-    
+
     #[test]
     fn test_relay_cell_serialization() {
         let relay = RelayCell::new(RelayCommand::Begin, 100, vec![5, 6, 7]);
         let bytes = relay.to_bytes().unwrap();
         assert_eq!(bytes.len(), Cell::PAYLOAD_SIZE);
-        
+
         let parsed = RelayCell::from_bytes(&bytes).unwrap();
         assert_eq!(parsed.command as u8, RelayCommand::Begin as u8);
         assert_eq!(parsed.stream_id, 100);
         assert_eq!(parsed.data, vec![5, 6, 7]);
     }
 }
-
