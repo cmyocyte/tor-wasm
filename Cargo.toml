@@ -4,7 +4,7 @@
 name = "tor-wasm"
 version = "0.1.0"
 edition = "2021"
-authors = ["Quantum Wallet Team"]
+authors = ["tor-wasm contributors"]
 description = "Minimal Tor client compiled to WebAssembly"
 license = "AGPL-3.0-only"
 
