@@ -484,20 +484,19 @@ server.on('request', (req, res) => {
   // Consensus endpoint — auth-gated + obfuscated
   const consensusPath = process.env.CONSENSUS_PATH || '/tor/consensus';
   if (req.url === consensusPath || req.url.startsWith(consensusPath + '?')) {
-    // Require auth token if configured
+    // Always require auth token — serve cover page if missing or invalid
     const authToken = process.env.BRIDGE_AUTH_TOKEN;
-    if (authToken) {
-      const reqUrl = new URL(req.url, 'http://localhost');
-      const token = reqUrl.searchParams.get('token') ||
-        (req.headers['authorization'] || '').replace('Bearer ', '');
-      if (token !== authToken) {
-        return serveCoverSite(req, res);
-      }
+    if (!authToken) {
+      return serveCoverSite(req, res);
+    }
+    const reqUrl = new URL(req.url, 'http://localhost');
+    const token = reqUrl.searchParams.get('token') ||
+      (req.headers['authorization'] || '').replace('Bearer ', '');
+    if (token !== authToken) {
+      return serveCoverSite(req, res);
     }
     if (!consensusCache) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Not ready' }));
-      return;
+      return serveCoverSite(req, res);
     }
 
     const cacheAge = Date.now() - consensusCacheTime;
