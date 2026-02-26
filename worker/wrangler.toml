@@ -10,7 +10,7 @@ bindings = [
 
 [[migrations]]
 tag = "v1"
-new_classes = ["MeekSession"]
+new_sqlite_classes = ["MeekSession"]
 
 # Environment variables (set via `wrangler secret put`)
 # TOR_GUARD_HOST  — Tor guard relay hostname
