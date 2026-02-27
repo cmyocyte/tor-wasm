@@ -289,9 +289,9 @@ impl WasmTlsStream {
     /// Extract encrypted TLS data from rustls into outgoing_tls buffer
     fn extract_outgoing(&mut self) -> IoResult<()> {
         if self.tls.wants_write() {
-            self.tls
-                .write_tls(&mut self.outgoing_tls)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("TLS write_tls: {}", e)))?;
+            self.tls.write_tls(&mut self.outgoing_tls).map_err(|e| {
+                io::Error::new(io::ErrorKind::Other, format!("TLS write_tls: {}", e))
+            })?;
         }
         Ok(())
     }
@@ -372,7 +372,8 @@ impl AsyncWrite for WasmTlsStream {
         }
 
         // 2. Write plaintext to rustls (encrypts internally)
-        let written = this.tls
+        let written = this
+            .tls
             .writer()
             .write(buf)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("TLS writer: {}", e)))?;

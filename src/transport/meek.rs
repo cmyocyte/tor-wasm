@@ -232,7 +232,10 @@ impl WasmMeekStream {
                                 w.wake();
                             }
                         } else if had_data {
-                            log::info!("meek poll: sent {} bytes, got empty response", send_data.len());
+                            log::info!(
+                                "meek poll: sent {} bytes, got empty response",
+                                send_data.len()
+                            );
                         }
                     }
                     Err(e) => {
