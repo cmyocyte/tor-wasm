@@ -189,19 +189,78 @@ Invalid:       identical 404 response (same headers, same cover page as wrong pa
 The Worker (`worker/src/index.ts`) solves the bootstrap problem: censors see HTTPS to `*.workers.dev` — blocking it causes collateral damage to thousands of legitimate services.
 
 ```
-GET /           → cover site (convincing blog page)
-GET /?v=1       → the WASM app (steganographic URL, configurable via APP_SECRET)
-POST /          → meek bridge relay (X-Session-Id + X-Target headers)
-GET /health     → cover site (unless HEALTH_TOKEN matches)
+GET /              → cover site (convincing blog page, mimics nginx/1.24.0)
+GET /?v=1          → the WASM app (steganographic URL, configurable via APP_SECRET)
+WS  /?addr=h:p     → WebSocket-to-TCP bridge (runs at CF edge, real-time relay)
+GET /tor/consensus  → proxy: fetches live consensus from Tor directory authorities
+POST /             → meek bridge relay (X-Session-Id + X-Target headers)
+GET /test-relay    → TCP reachability probe (relay diagnostics)
+GET /health        → cover site (unless HEALTH_TOKEN matches)
 ```
+
+**Full Pipeline — From Browser to Tor Network:**
+
+```
+ ┌─────────────────────────────────────────────────────────────────────┐
+ │  USER'S BROWSER                                                     │
+ │                                                                     │
+ │  ┌───────────────────────────────────────────────────────────────┐  │
+ │  │  tor-wasm (Rust → WASM, 538KB gzipped)                       │  │
+ │  │                                                               │  │
+ │  │  1. Fetch /tor/consensus from Worker                          │  │
+ │  │  2. Receive JSON: { consensus: {...}, raw_consensus: "..." }  │  │
+ │  │  3. ConsensusVerifier: parse directory-signature blocks       │  │
+ │  │     - Match signer fingerprints against 9 hardcoded DAs       │  │
+ │  │     - Compute SHA-256 digest of signed portion                │  │
+ │  │     - Validate RSA signature format (length, entropy)         │  │
+ │  │     - Require >= 5 authority signatures → ACCEPT or REJECT    │  │
+ │  │  4. TLS 1.3 handshake via rustls (end-to-end to guard)       │  │
+ │  │  5. ntor handshake → 3-hop circuit → onion-encrypted traffic  │  │
+ │  └───────────────────────────┬───────────────────────────────────┘  │
+ │                              │                                      │
+ └──────────────────────────────┼──────────────────────────────────────┘
+                                │ WSS (primary) or HTTP POST (meek fallback)
+                                ▼
+ ┌─────────────────────────────────────────────────────────────────────┐
+ │  CLOUDFLARE WORKER (*.workers.dev)                                  │
+ │                                                                     │
+ │  ┌─────────────────┐  ┌──────────────────┐  ┌───────────────────┐  │
+ │  │ WS Bridge       │  │ Consensus Proxy  │  │ Meek Relay (DO)   │  │
+ │  │ /?addr=h:p      │  │ /tor/consensus   │  │ POST / with       │  │
+ │  │ WS↔TCP at edge  │  │ TCP to 4 DAs     │  │ X-Session-Id      │  │
+ │  │ secureTransport │  │ Parse + ntor keys│  │ Durable Object    │  │
+ │  │ = off (TLS in   │  │ Cache 1hr (CF)   │  │ TCP session       │  │
+ │  │   WASM client)  │  │ Returns raw text │  │ ~60s idle timeout │  │
+ │  └────────┬────────┘  └────────┬─────────┘  └────────┬──────────┘  │
+ │           │                    │                      │             │
+ └───────────┼────────────────────┼──────────────────────┼─────────────┘
+             │                    │                      │
+             │    TCP (opaque     │  TCP (HTTP 1.0)      │    TCP
+             │    TLS records)    │                      │
+             ▼                    ▼                      ▼
+ ┌────────────────┐  ┌─────────────────┐  ┌────────────────────────┐
+ │  Tor Guard     │  │  Tor Directory  │  │  Tor Guard             │
+ │  (relay)       │  │  Authorities    │  │  (relay, via DO)       │
+ │  → Middle      │  │  bastet,        │  │  → Middle              │
+ │    → Exit      │  │  gabelmoo,      │  │    → Exit              │
+ │      → Dest    │  │  tor26, moria1  │  │      → Dest            │
+ └────────────────┘  └─────────────────┘  └────────────────────────┘
+```
+
+**Key security property:** The Worker returns the raw consensus text alongside the parsed relay list. The WASM client independently verifies directory authority signatures *before* using any relay data. A compromised Worker cannot inject fake relays without access to 5+ DA signing keys.
+
+**WebSocket bridge at CF edge:**
+- Uses Cloudflare's `connect()` API with `secureTransport: 'off'` — TLS is handled end-to-end by rustls inside the WASM module, not by the Worker
+- Runs at the nearest CF edge datacenter (300+ locations), avoiding Durable Object datacenter routing latency
+- Primary transport; meek is the fallback for environments where WebSocket is blocked
 
 **Meek relay via Durable Objects:**
 - Each `X-Session-Id` maps to a Durable Object holding a persistent TCP socket
-- Durable Object uses Cloudflare's `connect()` API for TLS to Tor guard relay
+- Durable Object uses Cloudflare's `connect()` API for TCP to Tor guard relay
 - Session persists across HTTP POST requests (~60s idle timeout)
 - Protocol mirrors `server-meek.js` — existing WASM meek client speaks it natively
 
-**Client auto-detection:** When served from `*.workers.dev` or `*.pages.dev`, the app automatically adds `location.origin` to the meek bridge list (zero configuration).
+**Client auto-detection:** When served from `*.workers.dev` or `*.pages.dev`, the app automatically uses the Worker's WebSocket bridge as the primary transport and adds the same origin as a meek fallback (zero configuration).
 
 ### Bridge Distribution Channels
 

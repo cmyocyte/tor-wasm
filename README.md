@@ -63,43 +63,109 @@ A **real Tor client** compiled to WebAssembly that:
 
 ## 🏗️ Architecture
 
-### Direct Mode
+### System Overview
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  BROWSER (any modern browser — Chrome, Firefox, Safari, iOS Safari)         │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  tor-wasm  (Rust → WebAssembly, 538KB gzipped)                        │  │
+│  │                                                                        │  │
+│  │  ┌─────────────┐  ┌──────────────┐  ┌──────────────────────────────┐  │  │
+│  │  │ Fingerprint │  │ Service      │  │  Tor Protocol Engine         │  │  │
+│  │  │ Defense     │  │ Worker Proxy │  │                              │  │  │
+│  │  │ (20 vectors)│  │ (sub-resource│  │  ntor X25519 handshake      │  │  │
+│  │  │             │  │  routing)    │  │  3-layer AES-128-CTR onion  │  │  │
+│  │  └─────────────┘  └──────────────┘  │  SHA-1 cell digest          │  │  │
+│  │                                      │  Tor-Vegas congestion ctrl  │  │  │
+│  │  ┌─────────────┐  ┌──────────────┐  │  Channel padding            │  │  │
+│  │  │ Consensus   │  │ TLS 1.3      │  │  Guard persistence (60d)    │  │  │
+│  │  │ Signature   │  │ (rustls)     │  │  Circuit isolation/rotation │  │  │
+│  │  │ Verifier    │  │ end-to-end   │  └──────────────────────────────┘  │  │
+│  │  │ (9 DA keys) │  │ to guard     │                                    │  │
+│  │  └─────────────┘  └──────────────┘                                    │  │
+│  └──────────────────────────────┬─────────────────────────────────────────┘  │
+│                                 │ encrypted TLS records                      │
+└─────────────────────────────────┼────────────────────────────────────────────┘
+                                  │
+          ┌───────────────────────┼───────────────────────┐
+          │                       │                       │
+          ▼                       ▼                       ▼
+   ┌─────────────┐      ┌──────────────┐      ┌──────────────────┐
+   │  WebSocket  │      │  Cloudflare  │      │    meek relay    │
+   │  Bridge     │      │  Worker      │      │  (HTTP POST      │
+   │  (WS→TCP)   │      │  (WS→TCP +   │      │   through CDN)   │
+   │             │      │   consensus  │      │                  │
+   │             │      │   proxy +    │      │                  │
+   │             │      │   meek)      │      │                  │
+   └──────┬──────┘      └──────┬───────┘      └────────┬─────────┘
+          │                    │  opaque bytes          │
+          └────────────────────┼────────────────────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │  REAL TOR NETWORK   │
+                    │                     │
+                    │  Guard ──→ Middle ──→ Exit ──→ Destination
+                    │  (knows    (knows    (knows
+                    │   bridge    neither)  destination,
+                    │   IP only)           not client)
+                    └─────────────────────┘
+```
+
+### Consensus Verification Pipeline
+
+The WASM client verifies that the relay list was signed by at least 5 of 9 Tor directory authorities before trusting it. This prevents a compromised bridge from injecting fake relays.
+
+```
+ Tor Directory Authorities (9 hardcoded)
+ ┌──────────┬──────────┬──────────┬──────────┐
+ │ bastet   │ gabelmoo │ tor26    │ moria1   │ ...5 more
+ └────┬─────┴────┬─────┴────┬─────┴────┬─────┘
+      │          │          │          │   TCP (HTTP 1.0)
+      └──────────┴──────┬───┴──────────┘
+                        ▼
+            ┌───────────────────────┐
+            │   Cloudflare Worker   │
+            │                       │
+            │  1. TCP fetch from DA │
+            │  2. Parse relay list  │
+            │  3. Fetch ntor keys   │
+            │  4. Return JSON with  │──→  CF Cache (1hr TTL)
+            │     raw_consensus     │
+            └───────────┬───────────┘
+                        │  JSON: { consensus: {...}, raw_consensus: "..." }
+                        ▼
+            ┌───────────────────────┐
+            │   WASM Client         │
+            │                       │
+            │  1. Parse relay JSON  │
+            │  2. Extract raw text  │
+            │  3. Verify 5+ DA sigs │ ← ConsensusVerifier (SHA-256 + RSA format)
+            │  4. Reject if < 5    │
+            │  5. Use relay list    │
+            └───────────────────────┘
+```
+
+### Connection Modes
+
+**Direct Mode:**
 ```
 Browser (WASM)  →  Bridge Server (WS→TCP)  →  Guard → Middle → Exit → Destination
 ```
 
-### Blinded Mode (two-hop, recommended)
+**Blinded Mode (two-hop, recommended):**
 ```
 Browser (WASM)  →  Bridge A (WS→WS)  →  Bridge B (decrypt, TCP)  →  Guard → Middle → Exit
                    sees: client IP        sees: guard IP
                    cannot see: guard      cannot see: client
 ```
 
-### Peer Bridge Mode (maximum censorship resistance)
+**Peer Bridge Mode (maximum censorship resistance):**
 ```
 Browser (WASM)  →  Volunteer Proxy (WebRTC→WS)  →  Bridge A  →  Bridge B  →  Guard → ...
                    looks like a video call
-```
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     BROWSER                                     │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  tor-wasm (Rust → WebAssembly, 1.2MB)                    │  │
-│  │                                                          │  │
-│  │  • ntor handshakes (X25519 + HKDF-SHA256)               │  │
-│  │  • Onion encryption (3 layers AES-128-CTR)              │  │
-│  │  • Circuit building (Guard → Middle → Exit)             │  │
-│  │  • Bridge blinding (X25519 + AES-256-GCM)               │  │
-│  │  • 20-vector fingerprint defense                        │  │
-│  │  • Transport: WebSocket, WebTunnel, meek, WebRTC         │  │
-│  │  • In-app bridge manager (IndexedDB + QR scanner)         │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└───────────────────────────┼────────────────────────────────────┘
-                            │
-                            ▼
-                   REAL TOR NETWORK
-          Guard → Middle → Exit → Destination
 ```
 
 ## 📦 Components
@@ -180,20 +246,24 @@ app/
 
 ### `/worker` - Cloudflare Worker
 
-Censorship-resistant hosting — serves the app AND acts as a meek bridge relay from `*.workers.dev`:
+Censorship-resistant hosting — serves the app, acts as a WebSocket bridge, meek relay, and consensus proxy from `*.workers.dev`:
 
 ```
 worker/
 ├── wrangler.toml      # Wrangler config (Durable Objects binding)
-├── src/index.ts       # Router + meek relay + cover site (~280 lines)
+├── src/index.ts       # Router + WS bridge + consensus proxy + meek relay (~600 lines)
+├── build.js           # Embeds WASM + HTML + JS into Worker for deployment
 ├── package.json
 └── tsconfig.json
 ```
 
 Routes:
-- `GET /` — cover site (looks like a blog)
-- `GET /?v=1` — the WASM app (steganographic URL)
-- `POST /` — meek bridge relay (X-Session-Id + X-Target headers)
+- `GET /` — cover site (looks like a blog, mimics nginx/1.24.0)
+- `GET /?v=1` — the WASM app (steganographic URL, configurable via APP_SECRET)
+- `WS /?addr=h:p` — WebSocket-to-TCP bridge (runs at CF edge, real-time relay)
+- `GET /tor/consensus` — proxy: fetches live consensus from Tor directory authorities
+- `POST /` — meek bridge relay (X-Session-Id + X-Target headers, Durable Objects)
+- `GET /test-relay` — TCP reachability probe for relay diagnostics
 
 ### `/tools` - Build & Distribution Tools
 
