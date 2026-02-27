@@ -42,7 +42,8 @@ impl WasmTcpProvider {
 
     /// Returns true if the bridge URL uses meek transport (HTTP/HTTPS)
     fn is_meek(&self) -> bool {
-        self.config.bridge_url.starts_with("https://") || self.config.bridge_url.starts_with("http://")
+        self.config.bridge_url.starts_with("https://")
+            || self.config.bridge_url.starts_with("http://")
     }
 
     /// Connect to a relay with retry logic

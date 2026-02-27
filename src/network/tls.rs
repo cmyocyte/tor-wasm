@@ -12,8 +12,8 @@ use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, ClientConnection, DigitallySignedStruct, SignatureScheme};
-use std::io::{self, Read, Write};
 use std::io::Result as IoResult;
+use std::io::{self, Read, Write};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -147,7 +147,9 @@ impl WasmTlsStream {
         server_name: Option<String>,
         peer_addr: Option<SocketAddr>,
     ) -> IoResult<Self> {
-        let sni = server_name.clone().unwrap_or_else(|| "www.example.com".to_string());
+        let sni = server_name
+            .clone()
+            .unwrap_or_else(|| "www.example.com".to_string());
         log::info!("TLS handshake with {} (rustls, permissive verifier)", sni);
 
         // Build TLS config with permissive verifier (no cert validation)
@@ -161,7 +163,10 @@ impl WasmTlsStream {
             Ok(name) => name,
             Err(_) => {
                 log::debug!("  SNI '{}' is not a valid DNS name, using fallback", sni);
-                "www.example.com".to_string().try_into().expect("fallback SNI is valid")
+                "www.example.com"
+                    .to_string()
+                    .try_into()
+                    .expect("fallback SNI is valid")
             }
         };
 
@@ -173,11 +178,15 @@ impl WasmTlsStream {
         loop {
             // 1. Flush any pending outgoing TLS records (ClientHello, etc.)
             let mut tls_output = Vec::new();
-            tls.write_tls(&mut tls_output)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("TLS write_tls: {}", e)))?;
+            tls.write_tls(&mut tls_output).map_err(|e| {
+                io::Error::new(io::ErrorKind::Other, format!("TLS write_tls: {}", e))
+            })?;
 
             if !tls_output.is_empty() {
-                log::info!("  TLS handshake: sending {} bytes to relay", tls_output.len());
+                log::info!(
+                    "  TLS handshake: sending {} bytes to relay",
+                    tls_output.len()
+                );
                 stream.write_all(&tls_output).await?;
                 stream.flush().await?;
                 log::info!("  TLS handshake: write+flush complete");
@@ -201,15 +210,20 @@ impl WasmTlsStream {
                 }
                 log::info!("  TLS handshake: received {} bytes from relay", n);
 
-                tls.read_tls(&mut &buf[..n])
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("TLS read_tls: {}", e)))?;
+                tls.read_tls(&mut &buf[..n]).map_err(|e| {
+                    io::Error::new(io::ErrorKind::Other, format!("TLS read_tls: {}", e))
+                })?;
 
-                tls.process_new_packets()
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("TLS process: {}", e)))?;
+                tls.process_new_packets().map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidData, format!("TLS process: {}", e))
+                })?;
             }
         }
 
-        log::info!("TLS handshake complete (protocol: {:?})", tls.protocol_version());
+        log::info!(
+            "TLS handshake complete (protocol: {:?})",
+            tls.protocol_version()
+        );
 
         let cert_info = server_name.map(|name| CertificateInfo::new(name, peer_addr));
 
@@ -260,7 +274,8 @@ impl WasmTlsStream {
         }
 
         // Feed encrypted data to rustls
-        let consumed = self.tls
+        let consumed = self
+            .tls
             .read_tls(&mut &self.incoming_tls[..])
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("TLS read_tls: {}", e)))?;
 
@@ -269,9 +284,9 @@ impl WasmTlsStream {
         }
 
         // Process TLS records
-        let state = self.tls
-            .process_new_packets()
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("TLS process: {}", e)))?;
+        let state = self.tls.process_new_packets().map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("TLS process: {}", e))
+        })?;
 
         // Extract any available plaintext
         if state.plaintext_bytes_to_read() > 0 {
