@@ -290,8 +290,9 @@ impl Circuit {
 
         // Get relay's ntor onion key from consensus
         let relay_onion_key = if let Some(ref ntor_key_b64) = relay.ntor_onion_key {
-            let ntor_bytes = general_purpose::STANDARD
+            let ntor_bytes = general_purpose::STANDARD_NO_PAD
                 .decode(ntor_key_b64)
+                .or_else(|_| general_purpose::STANDARD.decode(ntor_key_b64))
                 .map_err(|e| TorError::CircuitBuildFailed(format!("Invalid ntor key: {}", e)))?;
 
             if ntor_bytes.len() != 32 {
@@ -1497,8 +1498,9 @@ impl CircuitBuilder {
         // Get relay's ntor onion key from consensus
         let relay_onion_key = if let Some(ref ntor_key_b64) = relay.ntor_onion_key {
             log::info!("    ntor key (base64): {}", ntor_key_b64);
-            let ntor_bytes = general_purpose::STANDARD
+            let ntor_bytes = general_purpose::STANDARD_NO_PAD
                 .decode(ntor_key_b64)
+                .or_else(|_| general_purpose::STANDARD.decode(ntor_key_b64))
                 .map_err(|e| TorError::CircuitBuildFailed(format!("Invalid ntor key: {}", e)))?;
 
             log::info!(

@@ -1,6 +1,7 @@
 name = "tor-wasm-bridge"
 main = "src/index.ts"
-compatibility_date = "2024-01-01"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
 
 # Durable Objects for persistent meek sessions
 [durable_objects]

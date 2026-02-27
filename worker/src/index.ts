@@ -1,21 +1,18 @@
 /**
  * Cloudflare Worker — Tor Bridge + App Host
  *
- * Solves the bootstrap problem: serves the WASM privacy browser AND acts
- * as a meek bridge relay from the same domain. Censors see HTTPS traffic
- * to *.workers.dev — blocking it would cause collateral damage to thousands
- * of legitimate Cloudflare services.
- *
  * Routes:
- *   GET /           → cover site (looks like a blog)
- *   GET /?v=1       → the actual WASM app (steganographic URL)
- *   POST /          → meek bridge relay (X-Session-Id + X-Target headers)
- *   GET /health     → cover site (unless HEALTH_TOKEN matches)
- *   Everything else → cover site
- *
- * The meek relay uses Durable Objects to maintain TCP sessions across
- * HTTP requests (Durable Objects survive ~60s of idle time).
+ *   GET /              → cover site (looks like a blog)
+ *   GET /?v=1          → the actual WASM app (steganographic URL)
+ *   WS  /?addr=h:p     → WebSocket bridge to relay (runs at edge)
+ *   GET /tor/consensus  → proxy: fetches real Tor consensus from directory authorities
+ *   POST /             → meek bridge relay (X-Session-Id + X-Target headers)
+ *   GET /test-relay    → TCP reachability probe
+ *   GET /health        → cover site (unless HEALTH_TOKEN matches)
+ *   Everything else    → cover site
  */
+
+import { connect } from 'cloudflare:sockets';
 
 export interface Env {
   MEEK_SESSION: DurableObjectNamespace;
@@ -29,6 +26,23 @@ export interface Env {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    // CORS preflight
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        headers: {
+          'access-control-allow-origin': '*',
+          'access-control-allow-methods': 'GET, POST, OPTIONS',
+          'access-control-allow-headers': 'content-type, x-session-id, x-target, x-health-token',
+          'access-control-max-age': '86400',
+        },
+      });
+    }
+
+    // WebSocket bridge: upgrade requests with ?addr=host:port
+    if (request.headers.get('upgrade') === 'websocket' && url.searchParams.has('addr')) {
+      return handleWebSocketBridge(url.searchParams.get('addr')!);
+    }
 
     // meek bridge: POST requests with X-Session-Id
     if (request.method === 'POST' && request.headers.has('x-session-id')) {
@@ -44,6 +58,16 @@ export default {
       }
     }
 
+    // Consensus proxy: fetch real relay data from Tor directory authorities
+    if (url.pathname === '/tor/consensus') {
+      return handleConsensusProxy();
+    }
+
+    // Test relay reachability
+    if (url.pathname === '/test-relay' && url.searchParams.has('addr')) {
+      return handleTestRelay(url.searchParams.get('addr')!);
+    }
+
     // Health check (authenticated)
     if (url.pathname === '/health' && env.HEALTH_TOKEN) {
       const token = url.searchParams.get('token') || request.headers.get('x-health-token');
@@ -53,7 +77,7 @@ export default {
           guard: env.TOR_GUARD_HOST ? 'configured' : 'not configured',
           timestamp: Date.now(),
         }), {
-          headers: coverHeaders('application/json'),
+          headers: corsHeaders('application/json'),
         });
       }
     }
@@ -64,8 +88,6 @@ export default {
 };
 
 // --- Cover Site ---
-// A minimal but convincing blog page. Active probers see this for every
-// path, every method (except meek POST). Headers mimic nginx.
 
 function coverHeaders(contentType = 'text/html; charset=utf-8'): Record<string, string> {
   return {
@@ -74,6 +96,13 @@ function coverHeaders(contentType = 'text/html; charset=utf-8'): Record<string, 
     'x-content-type-options': 'nosniff',
     'x-frame-options': 'SAMEORIGIN',
     'cache-control': 'public, max-age=3600',
+  };
+}
+
+function corsHeaders(contentType = 'application/json'): Record<string, string> {
+  return {
+    ...coverHeaders(contentType),
+    'access-control-allow-origin': '*',
   };
 }
 
@@ -120,65 +149,346 @@ function serveCover(env: Env): Response {
 }
 
 // --- App Delivery ---
-// Serves the WASM privacy browser. In production, this would embed the built
-// app assets (HTML + WASM + JS) directly in the Worker. For development,
-// it returns a bootstrap page that loads from the app/ directory.
+// build.js replaces this function with embedded HTML + WASM + JS.
+// The placeholder below is used during development.
 
 function serveApp(env: Env): Response {
-  // In production, this would serve the embedded app bundle.
-  // For now, serve a bootstrap page that explains deployment.
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Browse</title>
-  <style>
-    body { background: #1a1a2e; color: #e2e8f0; font-family: system-ui, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-    .setup { text-align: center; max-width: 400px; padding: 20px; }
-    h2 { color: #6366f1; margin-bottom: 16px; }
-    p { color: #718096; line-height: 1.6; }
-    code { background: #16213e; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
-  </style>
-</head>
-<body>
-  <div class="setup">
-    <h2>Worker Deployed</h2>
-    <p>To serve the app from this Worker, run the build script to embed app assets:</p>
-    <p><code>cd worker && node build.sh</code></p>
-    <p>This will inline the WASM module, JavaScript, and HTML into the Worker bundle.</p>
-    <p>The meek bridge relay is already active on <code>POST /</code>.</p>
-  </div>
-</body>
-</html>`;
+  return new Response('App not built. Run: cd worker && node build.js', {
+    status: 500,
+    headers: coverHeaders('text/plain'),
+  });
+} // end serveApp
 
-  return new Response(html, {
-    status: 200,
-    headers: coverHeaders(),
+// --- WebSocket Bridge ---
+
+async function handleWebSocketBridge(addr: string): Promise<Response> {
+  const colonIdx = addr.lastIndexOf(':');
+  if (colonIdx <= 0) return new Response('Bad addr', { status: 400 });
+  const host = addr.substring(0, colonIdx);
+  const port = parseInt(addr.substring(colonIdx + 1));
+  if (!host || isNaN(port)) return new Response('Bad addr', { status: 400 });
+
+  const pair = new WebSocketPair();
+  const [client, server] = pair;
+  server.accept();
+
+  let socket: any;
+  try {
+    socket = connect({ hostname: host, port }, { secureTransport: 'off' });
+  } catch (e) {
+    server.close(1011, 'TCP connect failed');
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // WS → TCP
+  server.addEventListener('message', async (event: MessageEvent) => {
+    try {
+      const writer = socket.writable.getWriter();
+      if (event.data instanceof ArrayBuffer) {
+        await writer.write(new Uint8Array(event.data));
+      } else if (typeof event.data === 'string') {
+        await writer.write(new TextEncoder().encode(event.data));
+      }
+      writer.releaseLock();
+    } catch (e) {
+      try { server.close(1011, 'TCP write failed'); } catch (_) {}
+    }
+  });
+
+  server.addEventListener('close', () => { try { socket.close(); } catch (_) {} });
+  server.addEventListener('error', () => { try { socket.close(); } catch (_) {} });
+
+  // TCP → WS
+  (async () => {
+    try {
+      const reader = socket.readable.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value && value.byteLength > 0) {
+          try { server.send(value); } catch (e) { break; }
+        }
+      }
+    } catch (e) {}
+    try { server.close(1000, 'relay disconnected'); } catch (_) {}
+  })();
+
+  return new Response(null, { status: 101, webSocket: client });
+}
+
+// --- Consensus Proxy ---
+
+interface ParsedRelay {
+  nickname: string;
+  fingerprint: string;
+  address: string;
+  port: number;
+  bandwidth: number;
+  flags: string[];
+}
+
+const DIRECTORY_AUTHORITIES = [
+  { name: 'bastet', host: '204.13.164.118', port: 80 },
+  { name: 'gabelmoo', host: '131.188.40.189', port: 80 },
+  { name: 'tor26', host: '86.59.21.38', port: 80 },
+  { name: 'moria1', host: '128.31.0.34', port: 9131 },
+];
+
+async function handleConsensusProxy(): Promise<Response> {
+  const cache = caches.default;
+  const cacheKey = new Request('https://tor-consensus-cache.internal/v2');
+  const cached = await cache.match(cacheKey);
+  if (cached) {
+    return new Response(cached.body, {
+      headers: corsHeaders(),
+    });
+  }
+
+  for (const da of DIRECTORY_AUTHORITIES) {
+    try {
+      const result = await fetchConsensusFromDA(da);
+      if (result) {
+        const response = new Response(result, {
+          headers: { ...corsHeaders(), 'cache-control': 'public, max-age=3600' },
+        });
+        await cache.put(cacheKey, response.clone());
+        return response;
+      }
+    } catch (e) {
+      continue;
+    }
+  }
+
+  return new Response(JSON.stringify({ error: 'Failed to fetch consensus from directory authorities' }), {
+    status: 503,
+    headers: corsHeaders(),
   });
 }
 
+async function fetchConsensusFromDA(da: { name: string; host: string; port: number }): Promise<string | null> {
+  const consensusText = await tcpFetchHttp(da.host, da.port, '/tor/status-vote/current/consensus', 15000, 4 * 1024 * 1024);
+
+  const allRelays = parseConsensusRelays(consensusText);
+  if (allRelays.length === 0) return null;
+
+  const standardPorts = new Set([443, 80, 8080, 8443, 9001, 9030]);
+  const filtered = allRelays
+    .filter(r => r.flags.includes('Running') && r.flags.includes('Valid') && r.flags.includes('Fast'))
+    .filter(r => r.flags.includes('Guard') || r.flags.includes('Exit'))
+    .filter(r => standardPorts.has(r.port))
+    .sort((a, b) => b.bandwidth - a.bandwidth)
+    .slice(0, 200);
+
+  if (filtered.length === 0) return null;
+
+  const ntorKeys = await fetchNtorKeys(da.host, da.port, filtered.map(r => r.fingerprint));
+
+  const responseRelays = filtered
+    .filter(r => ntorKeys[r.fingerprint])
+    .map(r => ({
+      nickname: r.nickname,
+      fingerprint: r.fingerprint,
+      address: r.address,
+      port: r.port,
+      bandwidth: r.bandwidth,
+      published: Math.floor(Date.now() / 1000),
+      ntor_onion_key: ntorKeys[r.fingerprint],
+      flags: {
+        exit: r.flags.includes('Exit'),
+        fast: r.flags.includes('Fast'),
+        guard: r.flags.includes('Guard'),
+        hsdir: r.flags.includes('HSDir'),
+        running: r.flags.includes('Running'),
+        stable: r.flags.includes('Stable'),
+        v2dir: r.flags.includes('V2Dir'),
+        valid: r.flags.includes('Valid'),
+      },
+    }));
+
+  return JSON.stringify({
+    consensus: {
+      version: 3,
+      relays: responseRelays,
+    },
+    raw_consensus: consensusText,
+  });
+}
+
+function parseConsensusRelays(text: string): ParsedRelay[] {
+  const relays: ParsedRelay[] = [];
+  const lines = text.split('\n');
+  let current: ParsedRelay | null = null;
+
+  for (const line of lines) {
+    if (line.startsWith('r ')) {
+      const parts = line.split(' ');
+      if (parts.length >= 9) {
+        const fingerprint = b64ToHex(parts[2]);
+        if (fingerprint) {
+          current = {
+            nickname: parts[1],
+            fingerprint,
+            address: parts[6],
+            port: parseInt(parts[7]),
+            bandwidth: 0,
+            flags: [],
+          };
+          relays.push(current);
+        }
+      }
+    } else if (line.startsWith('s ') && current) {
+      current.flags = line.substring(2).trim().split(' ');
+    } else if (line.startsWith('w ') && current) {
+      const match = line.match(/Bandwidth=(\d+)/);
+      if (match) current.bandwidth = parseInt(match[1]);
+    }
+  }
+
+  return relays;
+}
+
+function b64ToHex(b64: string): string | null {
+  try {
+    let padded = b64;
+    while (padded.length % 4 !== 0) padded += '=';
+    const binary = atob(padded);
+    if (binary.length !== 20) return null;
+    return Array.from(binary)
+      .map(c => c.charCodeAt(0).toString(16).padStart(2, '0'))
+      .join('')
+      .toUpperCase();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchNtorKeys(host: string, port: number, fingerprints: string[]): Promise<Record<string, string>> {
+  const keys: Record<string, string> = {};
+
+  for (let i = 0; i < fingerprints.length; i += 40) {
+    const batch = fingerprints.slice(i, i + 40);
+    const fpParam = batch.join('+');
+
+    try {
+      const text = await tcpFetchHttp(host, port, `/tor/server/fp/${fpParam}`, 15000, 2 * 1024 * 1024);
+
+      let currentFp: string | null = null;
+      for (const line of text.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('fingerprint ')) {
+          const parts = trimmed.split(/\s+/).slice(1);
+          currentFp = parts.join('').toUpperCase();
+        } else if (trimmed.startsWith('ntor-onion-key ') && currentFp) {
+          const key = trimmed.split(/\s+/)[1];
+          if (key) {
+            keys[currentFp] = key;
+            currentFp = null;
+          }
+        } else if (trimmed.startsWith('router ')) {
+          currentFp = null;
+        }
+      }
+    } catch (e) {
+      // Skip failed batch
+    }
+  }
+
+  return keys;
+}
+
+async function tcpFetchHttp(host: string, port: number, path: string, timeoutMs: number, maxBytes: number): Promise<string> {
+  const socket = connect({ hostname: host, port }, { secureTransport: 'off' });
+
+  const request = `GET ${path} HTTP/1.0\r\nHost: ${host}\r\nUser-Agent: tor-wasm-proxy/1.0\r\n\r\n`;
+  const writer = socket.writable.getWriter();
+  await writer.write(new TextEncoder().encode(request));
+  writer.releaseLock();
+
+  const reader = socket.readable.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalSize = 0;
+  const deadline = Date.now() + timeoutMs;
+
+  try {
+    while (totalSize < maxBytes) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+
+      const timeoutPromise = new Promise<{ done: true; value: undefined }>(resolve =>
+        setTimeout(() => resolve({ done: true, value: undefined }), remaining)
+      );
+      const readPromise = reader.read();
+      const result = await Promise.race([readPromise, timeoutPromise]);
+
+      if (result.done) break;
+      if (result.value) {
+        chunks.push(new Uint8Array(result.value));
+        totalSize += result.value.byteLength;
+      }
+    }
+  } finally {
+    try { reader.releaseLock(); } catch (_) {}
+    try { socket.close(); } catch (_) {}
+  }
+
+  const combined = new Uint8Array(totalSize);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  const text = new TextDecoder().decode(combined);
+  const headerEnd = text.indexOf('\r\n\r\n');
+  if (headerEnd < 0) throw new Error('No HTTP header terminator');
+
+  const statusLine = text.substring(0, text.indexOf('\r\n'));
+  if (!statusLine.includes(' 200 ')) throw new Error(`HTTP error: ${statusLine}`);
+
+  return text.substring(headerEnd + 4);
+}
+
+// --- Test Relay Reachability ---
+
+async function handleTestRelay(addr: string): Promise<Response> {
+  const colonIdx = addr.lastIndexOf(':');
+  if (colonIdx <= 0) {
+    return new Response(JSON.stringify({ error: 'bad addr' }), { headers: corsHeaders() });
+  }
+  const host = addr.substring(0, colonIdx);
+  const port = parseInt(addr.substring(colonIdx + 1));
+
+  const start = Date.now();
+  try {
+    const socket = connect({ hostname: host, port }, { secureTransport: 'off' });
+    const reader = socket.readable.getReader();
+    const timeout = new Promise<null>(r => setTimeout(() => r(null), 5000));
+    const read = reader.read().then(r => r);
+    const result = await Promise.race([read, timeout]);
+    try { reader.releaseLock(); socket.close(); } catch (_) {}
+
+    return new Response(JSON.stringify({
+      addr, reachable: true, elapsed_ms: Date.now() - start,
+      got_data: result !== null && !(result as any).done,
+    }), { headers: corsHeaders() });
+  } catch (e: any) {
+    return new Response(JSON.stringify({
+      addr, reachable: false, elapsed_ms: Date.now() - start, error: e?.message || String(e),
+    }), { headers: corsHeaders() });
+  }
+}
+
 // --- Meek Bridge Relay ---
-// Each POST carries Tor data. X-Session-Id identifies the persistent session.
-// X-Target is the initial relay target (host:port). The Durable Object holds
-// the TCP socket to the Tor guard across multiple HTTP requests.
-//
-// Protocol (matches server-meek.js and WASM meek client):
-//   POST / with X-Session-Id: <uuid> and X-Target: <host:port>
-//   Body: raw Tor cells (binary)
-//   Response: buffered Tor cells from the relay (binary)
 
 async function handleMeekPost(request: Request, env: Env): Promise<Response> {
   const sessionId = request.headers.get('x-session-id');
   if (!sessionId || sessionId.length > 128) {
-    return serveCover(env); // Invalid session — look like cover site
+    return serveCover(env);
   }
 
-  // Route to Durable Object by session ID
   const id = env.MEEK_SESSION.idFromName(sessionId);
   const stub = env.MEEK_SESSION.get(id);
 
-  // Forward the request to the Durable Object
   const target = request.headers.get('x-target') || '';
   const guardHost = env.TOR_GUARD_HOST || '';
   const guardPort = env.TOR_GUARD_PORT || '443';
@@ -195,25 +505,14 @@ async function handleMeekPost(request: Request, env: Env): Promise<Response> {
   try {
     return await stub.fetch(doRequest);
   } catch (e) {
-    // Durable Object error — return empty response (meek client will retry)
     return new Response(new Uint8Array(0), {
       status: 200,
-      headers: {
-        'content-type': 'application/octet-stream',
-        'server': 'nginx/1.24.0',
-      },
+      headers: { 'content-type': 'application/octet-stream', 'server': 'nginx/1.24.0' },
     });
   }
 }
 
 // --- Meek Session Durable Object ---
-// Maintains a persistent TCP connection to a Tor guard relay across
-// multiple HTTP POST requests. Uses Cloudflare's `connect()` TCP API.
-//
-// Session lifecycle:
-//   1. First POST with X-Target → connect to relay
-//   2. Subsequent POSTs → relay data, return buffered response
-//   3. Idle timeout (~60s) → Durable Object hibernates, TCP closes
 
 export class MeekSession {
   private state: DurableObjectState;
@@ -230,12 +529,10 @@ export class MeekSession {
     const target = request.headers.get('x-target') || '';
     const body = await request.arrayBuffer();
 
-    // Connect on first request (or reconnect if target changed)
     if (!this.connected || (target && target !== this.target)) {
       await this.connectToRelay(target);
     }
 
-    // Send data to relay
     if (this.socket && body.byteLength > 0) {
       try {
         const writer = this.socket.writable.getWriter();
@@ -250,43 +547,33 @@ export class MeekSession {
       }
     }
 
-    // Read buffered response data (non-blocking)
-    // Give the relay a brief moment to respond
-    await new Promise(r => setTimeout(r, 50));
+    await new Promise(r => setTimeout(r, 300));
     const responseData = this.drainRecvBuffer();
 
     return new Response(responseData, {
       status: 200,
-      headers: {
-        'content-type': 'application/octet-stream',
-        'server': 'nginx/1.24.0',
-      },
+      headers: { 'content-type': 'application/octet-stream', 'server': 'nginx/1.24.0' },
     });
   }
 
   private async connectToRelay(target: string): Promise<void> {
     if (this.socket) {
-      try { this.socket.close(); } catch (e) { /* ignore */ }
+      try { this.socket.close(); } catch (e) {}
     }
 
     this.target = target;
     this.recvBuffer = [];
     this.connected = false;
 
-    if (!target || !target.includes(':')) {
-      return;
-    }
+    if (!target || !target.includes(':')) return;
 
     const [host, portStr] = target.split(':');
     const port = parseInt(portStr);
     if (!host || isNaN(port)) return;
 
     try {
-      // Cloudflare Workers connect() API for raw TCP
-      this.socket = connect({ hostname: host, port }, { secureTransport: 'on' });
+      this.socket = connect({ hostname: host, port }, { secureTransport: 'off' });
       this.connected = true;
-
-      // Background read loop
       this.readLoop();
     } catch (e) {
       this.connected = false;
@@ -295,25 +582,19 @@ export class MeekSession {
 
   private async readLoop(): Promise<void> {
     if (!this.socket) return;
-
     try {
       const reader = this.socket.readable.getReader();
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        if (value) {
-          this.recvBuffer.push(new Uint8Array(value));
-        }
+        if (value) this.recvBuffer.push(new Uint8Array(value));
       }
-    } catch (e) {
-      // Socket closed or errored
-    }
+    } catch (e) {}
     this.connected = false;
   }
 
   private drainRecvBuffer(): Uint8Array {
     if (this.recvBuffer.length === 0) return new Uint8Array(0);
-
     const totalLen = this.recvBuffer.reduce((sum, buf) => sum + buf.length, 0);
     const result = new Uint8Array(totalLen);
     let offset = 0;

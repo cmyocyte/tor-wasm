@@ -4,7 +4,7 @@
 //! pooling and lifecycle management.
 
 use super::{NetworkStats, WasmTcpProvider};
-use crate::transport::WasmTcpStream;
+use crate::transport::TransportStream;
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::io::Result as IoResult;
@@ -14,7 +14,7 @@ use std::sync::Arc;
 /// Connection pool entry
 struct PoolEntry {
     /// The stream
-    stream: WasmTcpStream,
+    stream: TransportStream,
 
     /// When this connection was created
     created_at: u64,
@@ -53,7 +53,7 @@ impl ConnectionManager {
     }
 
     /// Get a connection to an address (from pool or create new)
-    pub async fn get_connection(&self, addr: &SocketAddr) -> IoResult<WasmTcpStream> {
+    pub async fn get_connection(&self, addr: &SocketAddr) -> IoResult<TransportStream> {
         // Try to get from pool
         if let Some(stream) = self.get_from_pool(addr) {
             log::debug!("Reusing pooled connection to {}", addr);
@@ -68,7 +68,7 @@ impl ConnectionManager {
     }
 
     /// Return a connection to the pool
-    pub fn return_connection(&self, addr: SocketAddr, stream: WasmTcpStream) {
+    pub fn return_connection(&self, addr: SocketAddr, stream: TransportStream) {
         unsafe {
             let pool = &mut *self.pool.get();
 
@@ -95,7 +95,7 @@ impl ConnectionManager {
     }
 
     /// Get a connection from the pool
-    fn get_from_pool(&self, addr: &SocketAddr) -> Option<WasmTcpStream> {
+    fn get_from_pool(&self, addr: &SocketAddr) -> Option<TransportStream> {
         unsafe {
             let pool = &mut *self.pool.get();
 

@@ -66,6 +66,8 @@ pub struct WasmMeekStream {
     state: Rc<UnsafeCell<MeekStreamState>>,
     poll_interval_ms: u32,
     _poll_closure: Option<Closure<dyn FnMut()>>,
+    /// Interval ID from setInterval, needed for cleanup
+    poll_interval_id: Option<i32>,
 }
 
 /// Poll interval for fetching relay data (ms)
@@ -91,6 +93,7 @@ impl WasmMeekStream {
             state: state.clone(),
             poll_interval_ms: MEEK_POLL_INTERVAL,
             _poll_closure: None,
+            poll_interval_id: None,
         };
 
         // Initial POST to establish session (empty body, target in header)
@@ -202,11 +205,16 @@ impl WasmMeekStream {
             // Drain send buffer
             let send_data: Vec<u8> = s.send_buffer.drain(..).collect();
 
+            if !send_data.is_empty() {
+                log::info!("meek poll: sending {} bytes", send_data.len());
+            }
+
             // Spawn async exchange
             let state_inner = state.clone();
             let url = bridge_url.clone();
             let sid = session_id.clone();
             let tgt = target.clone();
+            let had_data = !send_data.is_empty();
 
             wasm_bindgen_futures::spawn_local(async move {
                 let stream = WasmMeekStreamHelper {
@@ -218,10 +226,13 @@ impl WasmMeekStream {
                     Ok(data) => {
                         let s = unsafe { &mut *state_inner.get() };
                         if !data.is_empty() {
+                            log::info!("meek poll: received {} bytes from relay", data.len());
                             s.recv_buffer.extend(data.iter());
                             if let Some(w) = s.read_waker.take() {
                                 w.wake();
                             }
+                        } else if had_data {
+                            log::info!("meek poll: sent {} bytes, got empty response", send_data.len());
                         }
                     }
                     Err(e) => {
@@ -238,12 +249,15 @@ impl WasmMeekStream {
         });
 
         let window = web_sys::window().expect("no window");
-        let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(
-            closure.as_ref().unchecked_ref(),
-            self.poll_interval_ms as i32,
-        );
+        let interval_id = window
+            .set_interval_with_callback_and_timeout_and_arguments_0(
+                closure.as_ref().unchecked_ref(),
+                self.poll_interval_ms as i32,
+            )
+            .expect("setInterval failed");
 
         self._poll_closure = Some(closure);
+        self.poll_interval_id = Some(interval_id);
     }
 }
 
@@ -377,5 +391,12 @@ impl Drop for WasmMeekStream {
     fn drop(&mut self) {
         let state = unsafe { &mut *self.state.get() };
         state.state = MeekState::Closed;
+
+        // Clear the poll interval to prevent "closure invoked after being dropped" panics
+        if let Some(interval_id) = self.poll_interval_id.take() {
+            if let Some(window) = web_sys::window() {
+                window.clear_interval_with_handle(interval_id);
+            }
+        }
     }
 }

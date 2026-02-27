@@ -13,6 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 
 const APP_HTML_PATH = path.join(__dirname, '..', 'app', 'index.html');
 const WORKER_SRC = path.join(__dirname, 'src', 'index.ts');
@@ -54,7 +55,7 @@ const escaped = html
 let workerSrc = fs.readFileSync(WORKER_SRC, 'utf-8');
 
 // Replace serveApp() with embedded HTML — use no-store to prevent caching issues
-const serveAppRegex = /function serveApp\(env: Env\): Response \{[\s\S]*?^}/m;
+const serveAppRegex = /function serveApp\(env: Env\): Response \{[\s\S]*?^} \/\/ end serveApp/m;
 const newServeApp = `function serveApp(env: Env): Response {
   const html = \`${escaped}\`;
 
@@ -62,7 +63,7 @@ const newServeApp = `function serveApp(env: Env): Response {
     status: 200,
     headers: { ...coverHeaders(), 'cache-control': 'no-store' },
   });
-}`;
+} // end serveApp`;
 
 if (!serveAppRegex.test(workerSrc)) {
   console.error('Could not find serveApp() function in worker/src/index.ts');
@@ -76,7 +77,8 @@ const manifest = fs.readFileSync(MANIFEST_PATH, 'utf-8');
 let sw = fs.readFileSync(SW_PATH, 'utf-8');
 const wasmJs = fs.readFileSync(WASM_JS_PATH, 'utf-8');
 const wasmBin = fs.readFileSync(WASM_BIN_PATH);
-const wasmB64 = wasmBin.toString('base64');
+const wasmGz = zlib.gzipSync(wasmBin, { level: 9 });
+const wasmB64 = wasmGz.toString('base64');
 
 // Patch SW: fix asset paths for Worker (../pkg/ -> /pkg/)
 // and bump cache version to invalidate stale caches
@@ -113,8 +115,10 @@ const routeInsert = `
       });
     }
     if (url.pathname === '/pkg/tor_wasm_bg.wasm') {
-      const wasmBytes = Uint8Array.from(atob("${wasmB64}"), c => c.charCodeAt(0));
-      return new Response(wasmBytes, {
+      const wasmGz = Uint8Array.from(atob("${wasmB64}"), c => c.charCodeAt(0));
+      const ds = new DecompressionStream('gzip');
+      const decompressed = new Response(wasmGz).body!.pipeThrough(ds);
+      return new Response(decompressed, {
         headers: { ...coverHeaders('application/wasm'), 'cache-control': 'public, max-age=86400' },
       });
     }
@@ -133,7 +137,7 @@ console.log(`  - app/index.html:        ${(html.length / 1024).toFixed(1)} KB`);
 console.log(`  - app/manifest.json:     ${(manifest.length / 1024).toFixed(1)} KB`);
 console.log(`  - app/sw.js:             ${(sw.length / 1024).toFixed(1)} KB (paths patched)`);
 console.log(`  - pkg/tor_wasm.js:       ${(wasmJs.length / 1024).toFixed(1)} KB`);
-console.log(`  - pkg/tor_wasm_bg.wasm:  ${(wasmBin.length / 1024).toFixed(1)} KB (${(wasmB64.length / 1024).toFixed(1)} KB base64)`);
+console.log(`  - pkg/tor_wasm_bg.wasm:  ${(wasmBin.length / 1024).toFixed(1)} KB → ${(wasmGz.length / 1024).toFixed(1)} KB gzipped (${(wasmB64.length / 1024).toFixed(1)} KB base64)`);
 console.log(`  - Total embedded:        ${((html.length + manifest.length + sw.length + wasmJs.length + wasmB64.length) / 1024).toFixed(1)} KB`);
 console.log('  - Patched worker/src/index.ts');
 console.log('');

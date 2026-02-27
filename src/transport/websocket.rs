@@ -12,7 +12,7 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{BinaryType, ErrorEvent, MessageEvent, WebSocket};
+use web_sys::{BinaryType, MessageEvent, WebSocket};
 
 /// State of the WebSocket connection
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -236,13 +236,15 @@ impl WasmTcpStream {
         }
 
         // onerror handler
+        // Note: WebSocket onerror fires a generic Event (NOT ErrorEvent),
+        // so we cannot call .message() — it would be undefined.
         {
             let state_clone = state.clone();
-            let onerror = Closure::wrap(Box::new(move |event: ErrorEvent| {
-                log::error!("WebSocket error: {:?}", event.message());
+            let onerror = Closure::wrap(Box::new(move |_event: JsValue| {
+                log::error!("WebSocket error event");
                 unsafe {
                     let st = &mut *state_clone.get();
-                    st.error = Some(format!("WebSocket error: {}", event.message()));
+                    st.error = Some("WebSocket error".to_string());
                     st.state = ConnectionState::Closed;
 
                     // Wake up any pending operations
@@ -253,7 +255,7 @@ impl WasmTcpStream {
                         waker.wake();
                     }
                 }
-            }) as Box<dyn FnMut(ErrorEvent)>);
+            }) as Box<dyn FnMut(JsValue)>);
 
             ws.set_onerror(Some(onerror.as_ref().unchecked_ref()));
             onerror.forget();

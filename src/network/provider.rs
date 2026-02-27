@@ -4,7 +4,7 @@
 //! through our bridge server.
 
 use super::{NetworkConfig, NetworkStats};
-use crate::transport::WasmTcpStream;
+use crate::transport::{TransportStream, WasmMeekStream, WasmTcpStream};
 use std::cell::UnsafeCell;
 use std::io::Result as IoResult;
 use std::net::SocketAddr;
@@ -40,8 +40,13 @@ impl WasmTcpProvider {
         }
     }
 
+    /// Returns true if the bridge URL uses meek transport (HTTP/HTTPS)
+    fn is_meek(&self) -> bool {
+        self.config.bridge_url.starts_with("https://") || self.config.bridge_url.starts_with("http://")
+    }
+
     /// Connect to a relay with retry logic
-    pub async fn connect_with_retry(&self, addr: &SocketAddr) -> IoResult<WasmTcpStream> {
+    pub async fn connect_with_retry(&self, addr: &SocketAddr) -> IoResult<TransportStream> {
         let max_retries = if self.config.retry_on_failure {
             self.config.max_retries
         } else {
@@ -79,49 +84,60 @@ impl WasmTcpProvider {
     }
 
     /// Single connection attempt with timeout
-    async fn connect_once(&self, addr: &SocketAddr) -> IoResult<WasmTcpStream> {
+    async fn connect_once(&self, addr: &SocketAddr) -> IoResult<TransportStream> {
         log::info!(
-            "Connecting to relay at {} (timeout: {}s)",
+            "Connecting to relay at {} via {} (timeout: {}s)",
             addr,
+            if self.is_meek() { "meek" } else { "WebSocket" },
             self.config.connect_timeout
         );
 
         self.record_attempt();
 
-        // Build WebSocket URL
-        let url = self.config.build_url(addr);
-
-        // Create connection future
-        let connect_future = WasmTcpStream::connect(&url);
-
-        // Create timeout (5 seconds default)
-        let timeout_ms = (self.config.connect_timeout * 1000) as u32;
-
-        // Race connection against timeout using a simple approach
-        // We'll spawn the connection and check if it completes within timeout
         let start = js_sys::Date::now();
 
-        // Try to connect
-        match connect_future.await {
-            Ok(stream) => {
-                let elapsed = ((js_sys::Date::now() - start) / 1000.0) as u64;
-                if elapsed > self.config.connect_timeout {
-                    log::warn!(
-                        "Connection to {} succeeded but took {}s (timeout was {}s)",
-                        addr,
-                        elapsed,
-                        self.config.connect_timeout
-                    );
-                } else {
-                    log::info!("Successfully connected to {} in {}s", addr, elapsed);
+        if self.is_meek() {
+            // meek transport: HTTP POST through CDN/Worker
+            let target = format!("{}:{}", addr.ip(), addr.port());
+            match WasmMeekStream::connect(&self.config.bridge_url, &target).await {
+                Ok(stream) => {
+                    let elapsed = ((js_sys::Date::now() - start) / 1000.0) as u64;
+                    log::info!("meek connected to {} in {}s", addr, elapsed);
+                    self.increment_active();
+                    Ok(TransportStream::Meek(stream))
                 }
-                self.increment_active();
-                Ok(stream)
+                Err(e) => {
+                    let elapsed = ((js_sys::Date::now() - start) / 1000.0) as u64;
+                    log::error!("meek connect to {} failed after {}s: {}", addr, elapsed, e);
+                    Err(e)
+                }
             }
-            Err(e) => {
-                let elapsed = ((js_sys::Date::now() - start) / 1000.0) as u64;
-                log::error!("Failed to connect to {} after {}s: {}", addr, elapsed, e);
-                Err(e)
+        } else {
+            // WebSocket transport (default)
+            let url = self.config.build_url(addr);
+            let connect_future = WasmTcpStream::connect(&url);
+
+            match connect_future.await {
+                Ok(stream) => {
+                    let elapsed = ((js_sys::Date::now() - start) / 1000.0) as u64;
+                    if elapsed > self.config.connect_timeout {
+                        log::warn!(
+                            "Connection to {} succeeded but took {}s (timeout was {}s)",
+                            addr,
+                            elapsed,
+                            self.config.connect_timeout
+                        );
+                    } else {
+                        log::info!("Successfully connected to {} in {}s", addr, elapsed);
+                    }
+                    self.increment_active();
+                    Ok(TransportStream::WebSocket(stream))
+                }
+                Err(e) => {
+                    let elapsed = ((js_sys::Date::now() - start) / 1000.0) as u64;
+                    log::error!("Failed to connect to {} after {}s: {}", addr, elapsed, e);
+                    Err(e)
+                }
             }
         }
     }

@@ -29,7 +29,7 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{BinaryType, ErrorEvent, MessageEvent, WebSocket};
+use web_sys::{BinaryType, MessageEvent, WebSocket};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -106,7 +106,7 @@ pub struct WasmWebTunnelStream {
     // Prevent closures from being dropped while WS events can still fire
     _on_open: Closure<dyn FnMut()>,
     _on_message: Closure<dyn FnMut(MessageEvent)>,
-    _on_error: Closure<dyn FnMut(ErrorEvent)>,
+    _on_error: Closure<dyn FnMut(JsValue)>,
     _on_close: Closure<dyn FnMut()>,
 }
 
@@ -179,7 +179,7 @@ impl WasmWebTunnelStream {
 
         // onerror
         let state_err = state.clone();
-        let on_error = Closure::wrap(Box::new(move |_event: ErrorEvent| {
+        let on_error = Closure::wrap(Box::new(move |_event: JsValue| {
             let s = unsafe { &mut *state_err.get() };
             s.error = Some("WebTunnel: connection error".to_string());
             s.state = TunnelState::Closed;
@@ -191,7 +191,7 @@ impl WasmWebTunnelStream {
                 w.wake();
             }
             log::error!("WebTunnel: connection error");
-        }) as Box<dyn FnMut(ErrorEvent)>);
+        }) as Box<dyn FnMut(JsValue)>);
         ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
 
         // onclose

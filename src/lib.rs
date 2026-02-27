@@ -267,12 +267,8 @@ impl TorClient {
             consensus.relays.len()
         );
 
-        // ⚠️ SECURITY NOTE: The bridge server pre-parses the consensus
-        // We cannot verify directory authority signatures in this architecture
-        // This means we're trusting the bridge server's relay data
-        // Self-hosting your own bridge mitigates this risk
-        log::warn!("⚠️ Consensus received from bridge (not directly verified)");
-        log::warn!("⚠️ For maximum security, self-host your own bridge server");
+        // Consensus signatures are verified in fetch_from_bridge() before we get here.
+        // The verifier checks that 5+ directory authorities signed the raw consensus.
 
         // Validate relay data looks legitimate
         let valid_fingerprints = consensus

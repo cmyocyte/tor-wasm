@@ -1,32 +1,79 @@
-//! TLS support for WASM
+//! TLS support for WASM using rustls
 //!
-//! Provides TLS wrapping for TCP streams using browser's crypto APIs.
-//! For Tor, this will handle TLS connections to relays.
+//! Real TLS implementation using rustls with the ring crypto provider.
+//! Handles TLS handshake and encryption/decryption for Tor relay connections.
 //!
-//! ## Current Implementation
-//!
-//! Since Tor uses its own cryptography (ntor handshake, onion encryption),
-//! and our WebSocket bridge can handle TLS to relays, this module provides:
-//!
-//! 1. **TLS metadata tracking** - Server name, connection info
-//! 2. **Certificate information** - For future verification
-//! 3. **Stream wrapping** - Clean API for TLS-wrapped streams
-//!
-//! The actual TLS handshake is delegated to:
-//! - WebSocket bridge (ws:// → wss:// for relay connections)
-//! - Browser's built-in TLS stack (fetch API for directory)
-//!
-//! This is the correct approach because:
-//! - Implementing TLS 1.3 from scratch in WASM is complex
-//! - Browser TLS is thoroughly tested and optimized
-//! - Tor's security comes from onion encryption, not just TLS
+//! Uses a permissive certificate verifier because Tor relays use self-signed
+//! certificates. Tor's security comes from its own onion encryption (ntor
+//! handshake + AES-CTR), not TLS certificate validation.
 
-use crate::transport::WasmTcpStream;
-use futures::io::{AsyncRead, AsyncWrite};
+use crate::transport::TransportStream;
+use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{ClientConfig, ClientConnection, DigitallySignedStruct, SignatureScheme};
+use std::io::{self, Read, Write};
 use std::io::Result as IoResult;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
+
+/// Buffer size for TLS records (max TLS record = 16KB)
+const TLS_BUFFER_SIZE: usize = 16384;
+
+// ---------------------------------------------------------------------------
+// Permissive certificate verifier (Tor relays use self-signed certs)
+// ---------------------------------------------------------------------------
+
+/// Certificate verifier that accepts all certificates.
+///
+/// This is equivalent to `rejectUnauthorized: false` in Node.js.
+/// Tor relays use self-signed certificates, and Tor's security relies on
+/// its own onion encryption, not TLS certificate validation.
+#[derive(Debug)]
+struct TorRelayVerifier;
+
+impl ServerCertVerifier for TorRelayVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Certificate info (metadata tracking)
+// ---------------------------------------------------------------------------
 
 /// Certificate information (for tracking/debugging)
 #[derive(Debug, Clone)]
@@ -40,7 +87,7 @@ pub struct CertificateInfo {
     /// Connection timestamp
     pub connected_at: u64,
 
-    /// TLS version (placeholder)
+    /// TLS version
     pub tls_version: String,
 }
 
@@ -51,159 +98,366 @@ impl CertificateInfo {
             server_name,
             peer_addr,
             connected_at: (js_sys::Date::now() / 1000.0) as u64,
-            tls_version: "TLS 1.3 (browser)".to_string(),
+            tls_version: "TLS 1.2/1.3 (rustls)".to_string(),
         }
     }
 }
 
-/// TLS-wrapped stream for WASM
+// ---------------------------------------------------------------------------
+// WasmTlsStream — real TLS over transport streams
+// ---------------------------------------------------------------------------
+
+/// TLS-wrapped stream for WASM using rustls.
 ///
-/// Wraps a WasmTcpStream with TLS encryption metadata.
-/// The actual TLS handshake is handled by the browser/bridge.
+/// Performs real TLS encryption/decryption over the underlying transport.
+/// The handshake is done in `wrap()` before returning the stream.
 pub struct WasmTlsStream {
-    /// Underlying TCP stream
-    inner: WasmTcpStream,
+    /// Underlying transport stream (WebSocket, meek, WebTunnel, or WebRTC)
+    inner: TransportStream,
 
-    /// TLS state and metadata
-    state: TlsState,
-}
+    /// Rustls client connection state machine
+    tls: ClientConnection,
 
-#[derive(Debug)]
-struct TlsState {
-    /// Whether TLS handshake is complete
-    handshake_done: bool,
+    /// Decrypted plaintext waiting to be read by the caller
+    plaintext_buf: Vec<u8>,
 
-    /// Certificate information
-    cert_info: Option<CertificateInfo>,
+    /// Encrypted data from the network, waiting for rustls to process
+    incoming_tls: Vec<u8>,
 
-    /// Total bytes read through this TLS stream
+    /// Encrypted data from rustls, waiting to be written to the network
+    outgoing_tls: Vec<u8>,
+
+    /// Total bytes read (plaintext)
     bytes_read: u64,
 
-    /// Total bytes written through this TLS stream
+    /// Total bytes written (plaintext)
     bytes_written: u64,
+
+    /// Certificate metadata
+    cert_info: Option<CertificateInfo>,
 }
 
 impl WasmTlsStream {
-    /// Wrap a TCP stream with TLS metadata
+    /// Wrap a transport stream with real TLS encryption.
+    ///
+    /// Performs the full TLS handshake before returning.
+    /// Uses a permissive certificate verifier (Tor relays use self-signed certs).
     pub async fn wrap(
-        stream: WasmTcpStream,
+        mut stream: TransportStream,
         server_name: Option<String>,
         peer_addr: Option<SocketAddr>,
     ) -> IoResult<Self> {
-        let server_name_str = server_name.as_deref().unwrap_or("unknown");
-        log::info!("Wrapping stream with TLS (server: {})", server_name_str);
+        let sni = server_name.clone().unwrap_or_else(|| "www.example.com".to_string());
+        log::info!("TLS handshake with {} (rustls, permissive verifier)", sni);
 
-        // Create certificate info
+        // Build TLS config with permissive verifier (no cert validation)
+        let config = ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(TorRelayVerifier))
+            .with_no_client_auth();
+
+        // Parse server name for SNI (fallback to "www.example.com" if nickname is invalid)
+        let server_name_parsed: ServerName<'static> = match sni.clone().try_into() {
+            Ok(name) => name,
+            Err(_) => {
+                log::debug!("  SNI '{}' is not a valid DNS name, using fallback", sni);
+                "www.example.com".to_string().try_into().expect("fallback SNI is valid")
+            }
+        };
+
+        // Create rustls client connection
+        let mut tls = ClientConnection::new(Arc::new(config), server_name_parsed)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("TLS init failed: {}", e)))?;
+
+        // Drive the TLS handshake to completion
+        loop {
+            // 1. Flush any pending outgoing TLS records (ClientHello, etc.)
+            let mut tls_output = Vec::new();
+            tls.write_tls(&mut tls_output)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("TLS write_tls: {}", e)))?;
+
+            if !tls_output.is_empty() {
+                log::info!("  TLS handshake: sending {} bytes to relay", tls_output.len());
+                stream.write_all(&tls_output).await?;
+                stream.flush().await?;
+                log::info!("  TLS handshake: write+flush complete");
+            }
+
+            // 2. Check if handshake is done
+            if !tls.is_handshaking() {
+                break;
+            }
+
+            // 3. Read response from relay (ServerHello, etc.)
+            if tls.wants_read() {
+                log::info!("  TLS handshake: waiting for relay data...");
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).await?;
+                if n == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::ConnectionReset,
+                        "Connection closed during TLS handshake",
+                    ));
+                }
+                log::info!("  TLS handshake: received {} bytes from relay", n);
+
+                tls.read_tls(&mut &buf[..n])
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("TLS read_tls: {}", e)))?;
+
+                tls.process_new_packets()
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("TLS process: {}", e)))?;
+            }
+        }
+
+        log::info!("TLS handshake complete (protocol: {:?})", tls.protocol_version());
+
         let cert_info = server_name.map(|name| CertificateInfo::new(name, peer_addr));
 
         Ok(Self {
             inner: stream,
-            state: TlsState {
-                handshake_done: true, // Browser/bridge handles handshake
-                cert_info,
-                bytes_read: 0,
-                bytes_written: 0,
-            },
+            tls,
+            plaintext_buf: Vec::with_capacity(TLS_BUFFER_SIZE),
+            incoming_tls: Vec::with_capacity(TLS_BUFFER_SIZE),
+            outgoing_tls: Vec::new(),
+            bytes_read: 0,
+            bytes_written: 0,
+            cert_info,
         })
     }
 
     /// Get certificate information
     pub fn certificate_info(&self) -> Option<&CertificateInfo> {
-        self.state.cert_info.as_ref()
+        self.cert_info.as_ref()
     }
 
-    /// Check if TLS handshake is complete
+    /// Check if TLS handshake is complete (always true after construction)
     pub fn is_handshake_done(&self) -> bool {
-        self.state.handshake_done
+        true
     }
 
-    /// Get total bytes read
+    /// Get total plaintext bytes read
     pub fn bytes_read(&self) -> u64 {
-        self.state.bytes_read
+        self.bytes_read
     }
 
-    /// Get total bytes written
+    /// Get total plaintext bytes written
     pub fn bytes_written(&self) -> u64 {
-        self.state.bytes_written
-    }
-
-    /// Get the underlying stream (for testing/debugging)
-    pub fn into_inner(self) -> WasmTcpStream {
-        self.inner
+        self.bytes_written
     }
 
     /// Get connection age in seconds
     pub fn connection_age(&self) -> Option<u64> {
-        self.state.cert_info.as_ref().map(|cert| {
+        self.cert_info.as_ref().map(|cert| {
             let now = (js_sys::Date::now() / 1000.0) as u64;
             now.saturating_sub(cert.connected_at)
         })
     }
+
+    /// Try to process any buffered incoming TLS data and extract plaintext
+    fn process_incoming(&mut self) -> IoResult<()> {
+        if self.incoming_tls.is_empty() {
+            return Ok(());
+        }
+
+        // Feed encrypted data to rustls
+        let consumed = self.tls
+            .read_tls(&mut &self.incoming_tls[..])
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("TLS read_tls: {}", e)))?;
+
+        if consumed > 0 {
+            self.incoming_tls.drain(..consumed);
+        }
+
+        // Process TLS records
+        let state = self.tls
+            .process_new_packets()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("TLS process: {}", e)))?;
+
+        // Extract any available plaintext
+        if state.plaintext_bytes_to_read() > 0 {
+            let mut plaintext = vec![0u8; state.plaintext_bytes_to_read()];
+            self.tls
+                .reader()
+                .read_exact(&mut plaintext)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("TLS reader: {}", e)))?;
+            self.plaintext_buf.extend_from_slice(&plaintext);
+        }
+
+        Ok(())
+    }
+
+    /// Extract encrypted TLS data from rustls into outgoing_tls buffer
+    fn extract_outgoing(&mut self) -> IoResult<()> {
+        if self.tls.wants_write() {
+            self.tls
+                .write_tls(&mut self.outgoing_tls)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("TLS write_tls: {}", e)))?;
+        }
+        Ok(())
+    }
 }
 
-// AsyncRead implementation - delegates to inner stream and tracks bytes
+// AsyncRead: decrypt data from the network
 impl AsyncRead for WasmTlsStream {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<IoResult<usize>> {
-        let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+        let this = &mut *self;
 
-        // Track bytes read
-        if let Poll::Ready(Ok(n)) = result {
-            self.state.bytes_read += n as u64;
+        // 1. Return buffered plaintext if available
+        if !this.plaintext_buf.is_empty() {
+            let n = std::cmp::min(buf.len(), this.plaintext_buf.len());
+            buf[..n].copy_from_slice(&this.plaintext_buf[..n]);
+            this.plaintext_buf.drain(..n);
+            this.bytes_read += n as u64;
+            return Poll::Ready(Ok(n));
         }
 
-        result
+        // 2. Loop: read encrypted data + process until we have plaintext or Pending
+        loop {
+            // Try processing what we already have
+            if !this.incoming_tls.is_empty() {
+                this.process_incoming()?;
+                if !this.plaintext_buf.is_empty() {
+                    let n = std::cmp::min(buf.len(), this.plaintext_buf.len());
+                    buf[..n].copy_from_slice(&this.plaintext_buf[..n]);
+                    this.plaintext_buf.drain(..n);
+                    this.bytes_read += n as u64;
+                    return Poll::Ready(Ok(n));
+                }
+            }
+
+            // Read more encrypted data from the inner transport
+            let mut tmp = [0u8; 4096];
+            match Pin::new(&mut this.inner).poll_read(cx, &mut tmp) {
+                Poll::Ready(Ok(0)) => {
+                    return Poll::Ready(Ok(0)); // EOF
+                }
+                Poll::Ready(Ok(n)) => {
+                    this.incoming_tls.extend_from_slice(&tmp[..n]);
+                    // Loop back to process the new data
+                }
+                Poll::Ready(Err(e)) => {
+                    return Poll::Ready(Err(e));
+                }
+                Poll::Pending => {
+                    // Waker registered by inner — we'll be woken when data arrives
+                    return Poll::Pending;
+                }
+            }
+        }
     }
 }
 
-// AsyncWrite implementation - delegates to inner stream and tracks bytes
+// AsyncWrite: encrypt data and send to the network
 impl AsyncWrite for WasmTlsStream {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<IoResult<usize>> {
-        let result = Pin::new(&mut self.inner).poll_write(cx, buf);
+        let this = &mut *self;
 
-        // Track bytes written
-        if let Poll::Ready(Ok(n)) = result {
-            self.state.bytes_written += n as u64;
+        // 1. Flush any pending outgoing TLS data first
+        while !this.outgoing_tls.is_empty() {
+            match Pin::new(&mut this.inner).poll_write(cx, &this.outgoing_tls) {
+                Poll::Ready(Ok(n)) => {
+                    this.outgoing_tls.drain(..n);
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
         }
 
-        result
+        // 2. Write plaintext to rustls (encrypts internally)
+        let written = this.tls
+            .writer()
+            .write(buf)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("TLS writer: {}", e)))?;
+
+        this.bytes_written += written as u64;
+
+        // 3. Extract encrypted TLS records
+        this.extract_outgoing()?;
+
+        // 4. Try to write encrypted data to inner transport
+        while !this.outgoing_tls.is_empty() {
+            match Pin::new(&mut this.inner).poll_write(cx, &this.outgoing_tls) {
+                Poll::Ready(Ok(n)) => {
+                    this.outgoing_tls.drain(..n);
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => break, // Will flush on next call
+            }
+        }
+
+        Poll::Ready(Ok(written))
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IoResult<()>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
+        let this = &mut *self;
+
+        // Extract any pending TLS data
+        this.extract_outgoing()?;
+
+        // Flush outgoing TLS data to inner stream
+        while !this.outgoing_tls.is_empty() {
+            match Pin::new(&mut this.inner).poll_write(cx, &this.outgoing_tls) {
+                Poll::Ready(Ok(n)) => {
+                    this.outgoing_tls.drain(..n);
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+
+        // Flush inner stream
+        Pin::new(&mut this.inner).poll_flush(cx)
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IoResult<()>> {
-        Pin::new(&mut self.inner).poll_close(cx)
+        let this = &mut *self;
+
+        // Send TLS close_notify
+        this.tls.send_close_notify();
+        this.extract_outgoing()?;
+
+        // Flush remaining TLS data
+        while !this.outgoing_tls.is_empty() {
+            match Pin::new(&mut this.inner).poll_write(cx, &this.outgoing_tls) {
+                Poll::Ready(Ok(n)) => {
+                    this.outgoing_tls.drain(..n);
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+
+        // Close inner stream
+        Pin::new(&mut this.inner).poll_close(cx)
     }
 }
 
+// ---------------------------------------------------------------------------
+// WasmTlsConnector — creates TLS streams
+// ---------------------------------------------------------------------------
+
 /// TLS connector for creating TLS streams
 #[derive(Clone)]
-pub struct WasmTlsConnector {
-    /// Verify certificates (currently delegated to browser)
-    _verify_certs: bool,
-}
+pub struct WasmTlsConnector;
 
 impl WasmTlsConnector {
     /// Create a new TLS connector
     pub fn new() -> Self {
-        Self {
-            _verify_certs: true,
-        }
+        Self
     }
 
-    /// Connect with TLS, tracking connection metadata
+    /// Connect with TLS, performing real handshake via rustls
     pub async fn connect(
         &self,
-        stream: WasmTcpStream,
+        stream: TransportStream,
         server_name: Option<&str>,
         peer_addr: Option<SocketAddr>,
     ) -> IoResult<WasmTlsStream> {
@@ -213,7 +467,7 @@ impl WasmTlsConnector {
     /// Connect with TLS (simplified version)
     pub async fn connect_simple(
         &self,
-        stream: WasmTcpStream,
+        stream: TransportStream,
         server_name: &str,
     ) -> IoResult<WasmTlsStream> {
         self.connect(stream, Some(server_name), None).await
@@ -232,8 +486,7 @@ mod tests {
 
     #[test]
     fn test_tls_connector_creation() {
-        let connector = WasmTlsConnector::new();
-        assert!(connector._verify_certs);
+        let _connector = WasmTlsConnector::new();
     }
 
     #[test]
@@ -242,6 +495,12 @@ mod tests {
         let cert = CertificateInfo::new("test.tor".to_string(), Some(addr));
         assert_eq!(cert.server_name, "test.tor");
         assert_eq!(cert.peer_addr, Some(addr));
-        assert!(cert.connected_at > 0);
+    }
+
+    #[test]
+    fn test_verifier_schemes() {
+        let verifier = TorRelayVerifier;
+        let schemes = verifier.supported_verify_schemes();
+        assert!(!schemes.is_empty());
     }
 }

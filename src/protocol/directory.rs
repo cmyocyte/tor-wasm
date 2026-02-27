@@ -461,25 +461,23 @@ impl DirectoryManager {
         use super::{Relay, RelayFlags};
         use std::net::IpAddr;
 
-        log::info!("🎭 Creating fallback consensus with REAL Tor relays...");
+        log::info!("🎭 Creating fallback consensus with CF-reachable Tor relays...");
 
-        // Create some mock relays for testing
+        // All relays verified reachable from Cloudflare edge (Feb 2026)
+        // ntor keys fetched from directory authority bastet (204.13.164.118:80)
         let mut relays = Vec::new();
         let now = (js_sys::Date::now() / 1000.0) as u64;
 
-        // REAL Guard relay - Using a known Tor guard with REAL ntor key
-        // These are actual keys from recent Tor descriptors (Nov 2024)
-        // Note: In production, fetch these dynamically from directory authorities
+        // Guard relay 1
         relays.push(Relay {
-            nickname: "CalyxInstitute14".to_string(),
-            fingerprint: "0111BA9B604669E636FFD5B503F382A4B7AD6E80".to_string(),
-            address: IpAddr::V4(std::net::Ipv4Addr::new(162, 247, 72, 199)),
+            nickname: "chali2na".to_string(),
+            fingerprint: "0040E1791755D340BA8109F4C1849666582CF56C".to_string(),
+            address: IpAddr::V4(std::net::Ipv4Addr::new(64, 65, 62, 145)),
             or_port: 443,
-            dir_port: Some(80),
+            dir_port: Some(0),
             bandwidth: 10000000,
             published: now,
-            // REAL ntor key from recent CalyxInstitute14 descriptor
-            ntor_onion_key: Some("YzRjM2M4ZjkzODcyNGU5ODkxNGQ2YjY3NzE5ZjY3MzI=".to_string()),
+            ntor_onion_key: Some("LR1iEwNhvbukFktKw3E8xnlB+SKyIwRJlbFBWiRyZzI".to_string()),
             family: None,
             flags: RelayFlags {
                 authority: false,
@@ -495,50 +493,23 @@ impl DirectoryManager {
             },
         });
 
-        // REAL Middle/Guard relay - Using another stable relay
-        // Using "artikel5ev6" - a stable relay (also guard-eligible)
+        // Guard relay 2
         relays.push(Relay {
-            nickname: "artikel5ev6".to_string(),
-            fingerprint: "1A4488A1DFC653BCB2B6BCCC74C21030E9C6E1E4".to_string(),
-            address: IpAddr::V4(std::net::Ipv4Addr::new(185, 220, 101, 27)),
-            or_port: 10027,
-            dir_port: Some(10028),
-            bandwidth: 5000000,
-            published: now,
-            ntor_onion_key: Some("J7kq3Z3bqKMzLqC9LmE5Rqvz8Lq3p8n8t8g2i8s8p8g=".to_string()),
-            family: None,
-            flags: RelayFlags {
-                authority: false,
-                bad_exit: false,
-                exit: false,
-                fast: true,
-                guard: true,
-                hs_dir: true,
-                running: true,
-                stable: true,
-                v2_dir: true,
-                valid: true,
-            },
-        });
-
-        // REAL Exit relay - Using a known exit relay
-        // Using "snap280" - a known exit relay
-        relays.push(Relay {
-            nickname: "snap280".to_string(),
-            fingerprint: "D62FB817B0288F7ADA1E4C99E2ADA2F0B2A2E88A".to_string(),
-            address: IpAddr::V4(std::net::Ipv4Addr::new(185, 220, 101, 40)),
-            or_port: 9001,
-            dir_port: Some(9030),
+            nickname: "FEVI20".to_string(),
+            fingerprint: "007BA681807ED056C04DA1CA22105F5584869F10".to_string(),
+            address: IpAddr::V4(std::net::Ipv4Addr::new(23, 134, 90, 59)),
+            or_port: 443,
+            dir_port: Some(0),
             bandwidth: 8000000,
             published: now,
-            ntor_onion_key: Some("p8n8t8g2i8s8p8gJ7kq3Z3bqKMzLqC9LmE5Rqvz8L=".to_string()),
+            ntor_onion_key: Some("9mtrgFg/lPrhT/O3ssxkOSk2NmMmDUE7ltWx7eP8uQM".to_string()),
             family: None,
             flags: RelayFlags {
                 authority: false,
                 bad_exit: false,
-                exit: true,
+                exit: false,
                 fast: true,
-                guard: false,
+                guard: true,
                 hs_dir: false,
                 running: true,
                 stable: true,
@@ -547,16 +518,16 @@ impl DirectoryManager {
             },
         });
 
-        // Additional guard relay for diversity
+        // Guard relay 3
         relays.push(Relay {
-            nickname: "Quintex51".to_string(),
-            fingerprint: "E5FCDB0B2D99AA314C5309F82E2ACF7224AB641F".to_string(),
-            address: IpAddr::V4(std::net::Ipv4Addr::new(199, 249, 230, 82)),
+            nickname: "MaxRelay2".to_string(),
+            fingerprint: "008EA22C040A4B5C262551195B5C34B54F353D83".to_string(),
+            address: IpAddr::V4(std::net::Ipv4Addr::new(23, 186, 168, 33)),
             or_port: 443,
-            dir_port: Some(80),
-            bandwidth: 6000000,
+            dir_port: Some(0),
+            bandwidth: 9000000,
             published: now,
-            ntor_onion_key: Some("i8s8p8gJ7kq3Z3bqKMzLqC9LmE5Rqvz8Lp8n8t8g2=".to_string()),
+            ntor_onion_key: Some("A7OmJsI2nkEKSkPevApwR8R9npCoxqb/4Wm5SP1/VRI".to_string()),
             family: None,
             flags: RelayFlags {
                 authority: false,
@@ -572,24 +543,99 @@ impl DirectoryManager {
             },
         });
 
-        // Additional exit relay for diversity
+        // Guard relay 4
         relays.push(Relay {
-            nickname: "Assange012us".to_string(),
-            fingerprint: "7FA8E7E44F1392A4E40FFC3B69DB3B00091B7FD3".to_string(),
-            address: IpAddr::V4(std::net::Ipv4Addr::new(166, 70, 207, 2)),
-            or_port: 9001,
-            dir_port: Some(9030),
+            nickname: "tried".to_string(),
+            fingerprint: "00D2CE3C2153EA09786F2105F26B138CF759424F".to_string(),
+            address: IpAddr::V4(std::net::Ipv4Addr::new(107, 155, 81, 178)),
+            or_port: 443,
+            dir_port: Some(0),
             bandwidth: 7000000,
             published: now,
-            ntor_onion_key: Some("t8g2i8s8p8gJ7kq3Z3bqKMzLqC9LmE5Rqvz8Lp8n8=".to_string()),
+            ntor_onion_key: Some("EH7NK18v7r+fbq/aramaYBAckwI6aJrozHgSm/dg+20".to_string()),
+            family: None,
+            flags: RelayFlags {
+                authority: false,
+                bad_exit: false,
+                exit: false,
+                fast: true,
+                guard: true,
+                hs_dir: true,
+                running: true,
+                stable: true,
+                v2_dir: true,
+                valid: true,
+            },
+        });
+
+        // Exit+Guard relay 1
+        relays.push(Relay {
+            nickname: "eo190".to_string(),
+            fingerprint: "0082FE19212D9681EEB2320A42ADF0390D231585".to_string(),
+            address: IpAddr::V4(std::net::Ipv4Addr::new(23, 129, 64, 190)),
+            or_port: 443,
+            dir_port: Some(0),
+            bandwidth: 8000000,
+            published: now,
+            ntor_onion_key: Some("I/nyyLJ5h2E9QIkmumS6r1LoS2ZElku+Dn991JejKAM".to_string()),
             family: None,
             flags: RelayFlags {
                 authority: false,
                 bad_exit: false,
                 exit: true,
                 fast: true,
-                guard: false,
-                hs_dir: false,
+                guard: true,
+                hs_dir: true,
+                running: true,
+                stable: true,
+                v2_dir: true,
+                valid: true,
+            },
+        });
+
+        // Exit+Guard relay 2
+        relays.push(Relay {
+            nickname: "SENDNOOSEplz".to_string(),
+            fingerprint: "000F3EB75342BE371F1D8D3FAE90890AEB5664EE".to_string(),
+            address: IpAddr::V4(std::net::Ipv4Addr::new(204, 137, 14, 106)),
+            or_port: 443,
+            dir_port: Some(0),
+            bandwidth: 9000000,
+            published: now,
+            ntor_onion_key: Some("qFrokPFfV78HK68kyNEx2UR4VUh8rNF8rilVuzJqkio".to_string()),
+            family: None,
+            flags: RelayFlags {
+                authority: false,
+                bad_exit: false,
+                exit: true,
+                fast: true,
+                guard: true,
+                hs_dir: true,
+                running: true,
+                stable: true,
+                v2_dir: true,
+                valid: true,
+            },
+        });
+
+        // Exit+Guard relay 3
+        relays.push(Relay {
+            nickname: "anarchistcook".to_string(),
+            fingerprint: "0077640E103A829BF8228D42F95818DAD1E9D84C".to_string(),
+            address: IpAddr::V4(std::net::Ipv4Addr::new(179, 43, 159, 78)),
+            or_port: 9001,
+            dir_port: Some(0),
+            bandwidth: 7000000,
+            published: now,
+            ntor_onion_key: Some("T4wbkGY3400hdVfMWZfdc8ZDyjbndf9vDsiSbBOPHEw".to_string()),
+            family: None,
+            flags: RelayFlags {
+                authority: false,
+                bad_exit: false,
+                exit: true,
+                fast: true,
+                guard: true,
+                hs_dir: true,
                 running: true,
                 stable: true,
                 v2_dir: true,
@@ -680,6 +726,25 @@ impl DirectoryManager {
         // Parse JSON
         let json_data: serde_json::Value = serde_json::from_str(&json_str)
             .map_err(|e| TorError::ParseError(format!("Failed to parse JSON: {}", e)))?;
+
+        // Verify consensus signatures if raw consensus text is included
+        if let Some(raw) = json_data.get("raw_consensus").and_then(|v| v.as_str()) {
+            let verifier = super::consensus_verify::ConsensusVerifier::new();
+            match verifier.verify_consensus(raw) {
+                Ok(count) => {
+                    log::info!(
+                        "✅ Consensus verified: {} authority signatures confirmed",
+                        count
+                    );
+                }
+                Err(e) => {
+                    log::warn!("❌ Consensus verification FAILED: {}", e);
+                    return Err(e);
+                }
+            }
+        } else {
+            log::warn!("⚠️ No raw_consensus in bridge response — cannot verify signatures");
+        }
 
         // Extract consensus object
         let consensus_obj = json_data

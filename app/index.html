@@ -923,9 +923,14 @@
         const MEEK_TIMEOUT = 20000; // meek is slower (HTTP round-trips)
 
         // Auto-detect Cloudflare Worker: if served from *.workers.dev or *.pages.dev,
-        // use the same origin as a meek bridge (the Worker acts as both app host and relay)
+        // use the Worker's WebSocket bridge (runs at edge, avoids Durable Object datacenter issue).
+        // The Worker handles WS upgrade at /?addr=host:port and bridges to raw TCP.
+        // Keep meek as fallback in case WebSocket is blocked.
         if (location.hostname.endsWith('.workers.dev') || location.hostname.endsWith('.pages.dev')) {
-            MEEK_BRIDGES.unshift(location.origin);
+            BRIDGES.length = 0; // Clear dev/example bridges
+            const wsUrl = location.origin.replace('https://', 'wss://').replace('http://', 'ws://');
+            BRIDGES.push(wsUrl); // Primary: WebSocket bridge (real-time, runs at edge)
+            MEEK_BRIDGES.unshift(location.origin); // Fallback: meek (slower, uses DO)
         }
 
         // Lox bridge distribution (trust-tiered credential system)
